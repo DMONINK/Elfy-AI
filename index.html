@@ -161,6 +161,13 @@
     }
     .btn-ghost:hover { background: rgba(177,159,221,.14); }
 
+    .btn-discord {
+      background: rgba(88,101,242,.15);
+      color: #c9cbff;
+      border: 1px solid rgba(88,101,242,.35);
+    }
+    .btn-discord:hover { background: rgba(88,101,242,.25); }
+
     /* ── Floating chat bubble demo ── */
     .chat-float {
       margin-top: 4rem;
@@ -513,7 +520,7 @@
       <a href="#features">Features</a>
       <a href="#playground">Try it</a>
       <a href="#setup">Setup</a>
-      <a href="https://github.com/DMONINK/Elfy-Image-Generator/blob/main/README.md" target="_blank">GitHub</a>
+      <a href="https://github.com" target="_blank">GitHub</a>
     </div>
   </nav>
 
@@ -527,7 +534,11 @@
     </p>
     <div class="btn-group">
       <a href="#playground" class="btn btn-primary">🎨 Try Image Gen</a>
-      <a href="https://github.com/DMONINK/Elfy-Image-Generator/" target="_blank" class="btn btn-ghost">⭐ View on GitHub</a>
+      <a href="https://github.com" target="_blank" class="btn btn-ghost">⭐ View on GitHub</a>
+      <a href="https://discord.com/users/612803327675334673" target="_blank" rel="noopener" class="btn btn-discord">
+        <img src="https://cdn.discordapp.com/avatars/612803327675334673/53969f51c01b7eccfdcf736965b64dea.png?size=64" alt="Discord avatar" style="width:22px;height:22px;border-radius:50%;flex-shrink:0;" />
+        Connect on Discord
+      </a>
     </div>
 
     <!-- Floating chat preview -->
@@ -539,7 +550,7 @@
       <div class="bubble bot">
         <div class="name">Elfy 🌸</div>
         On it! Here's something magical for you ✨
-        <br><em style="color:var(--mist);font-size:.82rem;">[image attached]</em>
+        <img src="https://cdn.discordapp.com/attachments/839878705311383579/1519803507740377189/file_00000000b00c72069db1e92932734714.png?ex=6a3ee2d0&is=6a3d9150&hm=47ccefc179afe25e8262f627f9c29a7a7e3b510cc1db9f99ec93c37c3df45d55&" alt="AI generated image" style="width:100%;max-width:260px;border-radius:.75rem;margin-top:.6rem;display:block;" />
       </div>
       <div class="bubble user">
         <div class="name">You</div>
@@ -711,7 +722,7 @@
       </div>
     </div>
     <div style="margin-top:2.5rem;">
-      <a href="https://github.com/DMONINK/Elfy-Image-Generator/" target="_blank" class="btn btn-primary">⭐ View Source on GitHub</a>
+      <a href="https://github.com" target="_blank" class="btn btn-primary">⭐ View Source on GitHub</a>
     </div>
   </section>
 
@@ -752,7 +763,7 @@
       try {
         const encoded = encodeURIComponent(prompt);
         // Use Pollinations.ai image API — same endpoint the Discord bot uses
-        const url = `https://image.pollinations.ai/prompt/${encoded}?model=nanobanana-pro&width=768&height=768&nologo=true&enhance=true&seed=${Date.now()}`;
+        const url = `https://image.pollinations.ai/prompt/${encoded}?model=flux&width=768&height=768&nologo=true&enhance=true&seed=${Date.now()}`;
 
         const img = new Image();
         img.onload = () => {
