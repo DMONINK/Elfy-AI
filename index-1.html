@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Elfy — AI Discord Companion</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --ink:       #0f0d1a;
+      --surface:   #16121f;
+      --card:      #1e1830;
+      --rim:       #2a2240;
+      --mist:      #6e5fa0;
+      --lavender:  #b19fdd;
+      --bloom:     #e8b4f0;
+      --white:     #f2eeff;
+      --gold:      #f4c97a;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--ink);
+      color: var(--white);
+      font-family: 'DM Sans', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.65;
+      overflow-x: hidden;
+    }
+
+    /* ── Ambient glow ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 60% 40% at 15% 20%, rgba(177,159,221,.12) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 35% at 85% 80%, rgba(232,180,240,.09) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Nav ── */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.25rem;
+      background: rgba(15,13,26,.75);
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid rgba(177,159,221,.08);
+    }
+    .nav-logo {
+      font-family: 'DM Serif Display', serif;
+      font-size: 1.35rem;
+      color: var(--bloom);
+      text-decoration: none;
+      letter-spacing: .01em;
+    }
+    .nav-links { display: flex; gap: 2rem; }
+    .nav-links a {
+      color: var(--mist);
+      text-decoration: none;
+      font-size: .85rem;
+      font-weight: 500;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      transition: color .2s;
+    }
+    .nav-links a:hover { color: var(--lavender); }
+
+    /* ── Hero ── */
+    .hero {
+      position: relative;
+      z-index: 1;
+      min-height: 100svh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 8rem 1.5rem 5rem;
+    }
+
+    .hero-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      background: rgba(232,180,240,.08);
+      border: 1px solid rgba(232,180,240,.2);
+      border-radius: 2rem;
+      padding: .35rem 1rem;
+      font-size: .78rem;
+      font-weight: 600;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--bloom);
+      margin-bottom: 2rem;
+    }
+    .hero-eyebrow span { font-size: .9rem; }
+
+    .hero h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: clamp(2rem, 5vw, 4.5rem);
+      line-height: 1.1;
+      letter-spacing: -.02em;
+      margin-bottom: 1.5rem;
+      max-width: 100%;
+      word-break: break-word;
+    }
+    .hero h1 em {
+      font-style: italic;
+      color: var(--bloom);
+    }
+
+    .hero-sub {
+      max-width: 520px;
+      color: var(--mist);
+      font-size: 1.1rem;
+      line-height: 1.7;
+      margin-bottom: 2.5rem;
+    }
+
+    .btn-group { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .75rem 1.75rem;
+      border-radius: .6rem;
+      font-size: .95rem;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform .15s, box-shadow .15s, opacity .15s;
+      border: none;
+    }
+    .btn:hover { transform: translateY(-2px); }
+    .btn:active { transform: translateY(0); }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #b19fdd 0%, #e8b4f0 100%);
+      color: var(--ink);
+      box-shadow: 0 4px 24px rgba(177,159,221,.3);
+    }
+    .btn-primary:hover { box-shadow: 0 8px 32px rgba(177,159,221,.45); }
+
+    .btn-ghost {
+      background: rgba(177,159,221,.08);
+      color: var(--lavender);
+      border: 1px solid rgba(177,159,221,.2);
+    }
+    .btn-ghost:hover { background: rgba(177,159,221,.14); }
+
+    /* ── Floating chat bubble demo ── */
+    .chat-float {
+      margin-top: 4rem;
+      display: flex;
+      flex-direction: column;
+      gap: .75rem;
+      max-width: 420px;
+      width: 100%;
+    }
+    .bubble {
+      padding: .75rem 1.1rem;
+      border-radius: 1.1rem;
+      font-size: .9rem;
+      line-height: 1.5;
+      position: relative;
+      animation: floatIn .5s ease both;
+    }
+    .bubble.user {
+      background: rgba(177,159,221,.12);
+      border: 1px solid rgba(177,159,221,.18);
+      align-self: flex-end;
+      border-bottom-right-radius: .3rem;
+    }
+    .bubble.bot {
+      background: rgba(232,180,240,.09);
+      border: 1px solid rgba(232,180,240,.18);
+      align-self: flex-start;
+      border-bottom-left-radius: .3rem;
+    }
+    .bubble .name {
+      font-size: .72rem;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      margin-bottom: .25rem;
+    }
+    .bubble.user .name { color: var(--lavender); }
+    .bubble.bot  .name { color: var(--bloom); }
+
+    @keyframes floatIn {
+      from { opacity:0; transform: translateY(10px); }
+      to   { opacity:1; transform: translateY(0); }
+    }
+    .bubble:nth-child(1) { animation-delay: .1s; }
+    .bubble:nth-child(2) { animation-delay: .4s; }
+    .bubble:nth-child(3) { animation-delay: .7s; }
+
+    /* ── Sections ── */
+    section {
+      position: relative;
+      z-index: 1;
+      padding: 6rem 1.25rem;
+      max-width: 1100px;
+      margin: 0 auto;
+      box-sizing: border-box;
+      width: 100%;
+    }
+
+    .section-label {
+      font-size: .75rem;
+      font-weight: 600;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--bloom);
+      margin-bottom: .75rem;
+    }
+    .section-title {
+      font-family: 'DM Serif Display', serif;
+      font-size: clamp(2rem, 4.5vw, 3rem);
+      line-height: 1.15;
+      color: var(--white);
+      margin-bottom: 1rem;
+    }
+    .section-desc {
+      color: var(--mist);
+      max-width: 520px;
+      font-size: 1rem;
+      line-height: 1.7;
+      margin-bottom: 3rem;
+    }
+
+    /* ── Feature grid ── */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+      gap: 1.25rem;
+    }
+    .feature-card {
+      background: var(--card);
+      border: 1px solid var(--rim);
+      border-radius: 1rem;
+      padding: 1.75rem;
+      transition: border-color .2s, transform .2s;
+    }
+    .feature-card:hover {
+      border-color: rgba(177,159,221,.35);
+      transform: translateY(-3px);
+    }
+    .feature-icon {
+      font-size: 1.8rem;
+      margin-bottom: .9rem;
+    }
+    .feature-card h3 {
+      font-family: 'DM Serif Display', serif;
+      font-size: 1.15rem;
+      color: var(--white);
+      margin-bottom: .4rem;
+    }
+    .feature-card p {
+      color: var(--mist);
+      font-size: .9rem;
+      line-height: 1.6;
+    }
+
+    /* ── Live image generator ── */
+    #playground {
+      border-top: 1px solid var(--rim);
+    }
+    .playground-box {
+      background: var(--card);
+      border: 1px solid var(--rim);
+      border-radius: 1.25rem;
+      padding: 2rem;
+      max-width: 680px;
+    }
+    .playground-box p.hint {
+      font-size: .82rem;
+      color: var(--mist);
+      margin-bottom: 1.25rem;
+    }
+    .prompt-row {
+      display: flex;
+      gap: .75rem;
+      margin-bottom: 1.5rem;
+    }
+    .prompt-input {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--rim);
+      border-radius: .6rem;
+      color: var(--white);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .95rem;
+      padding: .7rem 1rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .prompt-input:focus { border-color: var(--lavender); }
+    .prompt-input::placeholder { color: var(--mist); opacity: .6; }
+
+    .gen-btn {
+      background: linear-gradient(135deg, #b19fdd 0%, #e8b4f0 100%);
+      color: var(--ink);
+      border: none;
+      border-radius: .6rem;
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 700;
+      font-size: .9rem;
+      padding: .7rem 1.4rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity .2s, transform .15s;
+    }
+    .gen-btn:hover { opacity: .9; transform: translateY(-1px); }
+    .gen-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+    .image-result {
+      width: 100%;
+      aspect-ratio: 1;
+      background: var(--surface);
+      border: 1px solid var(--rim);
+      border-radius: .85rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      min-height: 260px;
+    }
+    .image-result img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: .75rem;
+      display: block;
+    }
+    .image-result .placeholder-text {
+      color: var(--mist);
+      font-size: .9rem;
+      text-align: center;
+      padding: 1rem;
+      line-height: 1.6;
+    }
+    .loader {
+      width: 36px;
+      height: 36px;
+      border: 3px solid rgba(177,159,221,.2);
+      border-top-color: var(--lavender);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .pollinations-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      margin-top: 1rem;
+      font-size: .75rem;
+      color: var(--mist);
+    }
+    .pollinations-badge a {
+      color: var(--lavender);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .pollinations-badge a:hover { color: var(--bloom); }
+
+    /* ── Commands table ── */
+    .cmd-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .9rem;
+    }
+    .cmd-table th {
+      text-align: left;
+      padding: .6rem 1rem;
+      color: var(--bloom);
+      font-size: .72rem;
+      font-weight: 600;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--rim);
+    }
+    .cmd-table td {
+      padding: .85rem 1rem;
+      border-bottom: 1px solid rgba(42,34,64,.6);
+      color: var(--white);
+      vertical-align: top;
+    }
+    .cmd-table tr:last-child td { border-bottom: none; }
+    .cmd-table tr:hover td { background: rgba(177,159,221,.04); }
+    .cmd {
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--lavender);
+      font-size: .85rem;
+    }
+    .cmd-desc { color: var(--mist); font-size: .88rem; }
+
+    /* ── Setup steps ── */
+    .steps { display: flex; flex-direction: column; gap: 1.5rem; }
+    .step {
+      display: flex;
+      gap: 1.25rem;
+      align-items: flex-start;
+    }
+    .step-num {
+      flex-shrink: 0;
+      width: 2.2rem;
+      height: 2.2rem;
+      background: rgba(177,159,221,.1);
+      border: 1px solid rgba(177,159,221,.25);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'DM Serif Display', serif;
+      font-size: 1rem;
+      color: var(--lavender);
+    }
+    .step-body h4 {
+      font-weight: 600;
+      color: var(--white);
+      margin-bottom: .25rem;
+    }
+    .step-body p, .step-body a {
+      color: var(--mist);
+      font-size: .9rem;
+    }
+    .step-body a { color: var(--lavender); text-decoration: none; }
+    .step-body a:hover { color: var(--bloom); text-decoration: underline; }
+    .code-inline {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--surface);
+      border: 1px solid var(--rim);
+      border-radius: .3rem;
+      padding: .1rem .4rem;
+      font-size: .82rem;
+      color: var(--bloom);
+    }
+
+    /* ── Footer ── */
+    footer {
+      position: relative;
+      z-index: 1;
+      border-top: 1px solid var(--rim);
+      padding: 2.5rem 2rem;
+      text-align: center;
+      color: var(--mist);
+      font-size: .82rem;
+    }
+    footer a { color: var(--lavender); text-decoration: none; }
+    footer a:hover { color: var(--bloom); }
+
+    /* ── Mobile ── */
+    @media (max-width: 640px) {
+      html, body { overflow-x: hidden; max-width: 100vw; }
+
+      nav { padding: .85rem 1rem; }
+      .nav-links { gap: .9rem; }
+      .nav-links a { font-size: .75rem; }
+
+      .hero { padding: 6rem 1rem 3rem; }
+      .hero h1 { font-size: clamp(1.7rem, 8vw, 2.4rem) !important; letter-spacing: -.01em; }
+      .hero-sub { font-size: .95rem; }
+      .btn-group { flex-direction: column; align-items: stretch; }
+      .btn { justify-content: center; font-size: .9rem; }
+
+      .chat-float { max-width: 100%; }
+
+      section { padding: 3rem 1rem; }
+      .section-title { font-size: 1.6rem; }
+
+      .feature-grid { grid-template-columns: 1fr; }
+
+      .playground-box { padding: 1.25rem 1rem; }
+      .prompt-row { flex-direction: column; }
+      .gen-btn { width: 100%; }
+      .image-result { height: 240px; }
+
+      .cmd-table td, .cmd-table th { font-size: .78rem; padding: .6rem .75rem; }
+      .cmd { font-size: .72rem; }
+
+      .steps { gap: 1rem; }
+      .step { flex-direction: column; gap: .5rem; }
+
+      footer { padding: 1.75rem 1rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <a class="nav-logo" href="#">✦ Elfy</a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#playground">Try it</a>
+      <a href="#setup">Setup</a>
+      <a href="https://github.com" target="_blank">GitHub</a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="hero-eyebrow"><span>✨</span> AI Discord Companion</div>
+    <h1>Meet <em>Elfy</em>,<br>your Discord AI</h1>
+    <p class="hero-sub">
+      A warm, witty Discord chatbot powered by Google Gemini for conversation
+      and Pollinations.ai for stunning AI image generation — all in one bot.
+    </p>
+    <div class="btn-group">
+      <a href="#playground" class="btn btn-primary">🎨 Try Image Gen</a>
+      <a href="https://github.com" target="_blank" class="btn btn-ghost">⭐ View on GitHub</a>
+    </div>
+
+    <!-- Floating chat preview -->
+    <div class="chat-float">
+      <div class="bubble user">
+        <div class="name">You</div>
+        @Elfy generate a picture of a glowing forest at dusk
+      </div>
+      <div class="bubble bot">
+        <div class="name">Elfy 🌸</div>
+        On it! Here's something magical for you ✨
+        <br><em style="color:var(--mist);font-size:.82rem;">[image attached]</em>
+      </div>
+      <div class="bubble user">
+        <div class="name">You</div>
+        omg that's stunning 🤩
+      </div>
+    </div>
+  </div>
+
+  <!-- Features -->
+  <section id="features">
+    <div class="section-label">What it does</div>
+    <h2 class="section-title">One bot, many powers</h2>
+    <p class="section-desc">
+      Elfy brings together a friendly AI personality, per-channel memory,
+      and creative image generation — all triggered naturally in chat.
+    </p>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon">💬</div>
+        <h3>Natural Conversation</h3>
+        <p>Powered by Gemini, Elfy keeps context across your whole channel. Talk to her by mentioning her or in DMs.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🎨</div>
+        <h3>AI Image Generation</h3>
+        <p>Ask Elfy to "draw", "generate", or "create" any image and get a stunning result via the Pollinations.ai Flux model.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🖼️</div>
+        <h3>Image Editing</h3>
+        <p>Upload a photo and ask Elfy to restyle it — turn it into anime, a painting, a cartoon, or any creative style.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📎</div>
+        <h3>File & Media Support</h3>
+        <p>Send images, audio, and documents. Elfy understands multimodal input thanks to Gemini 1.5 Flash.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🧠</div>
+        <h3>Per-Channel Memory</h3>
+        <p>Each Discord channel and thread has its own conversation history, persisted between bot restarts.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🎭</div>
+        <h3>Custom Persona</h3>
+        <p>Use <code>/forget [persona]</code> to give Elfy a new personality on the fly, or reset her back to her warm default self.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Live playground -->
+  <section id="playground">
+    <div class="section-label">Live demo</div>
+    <h2 class="section-title">Generate an image, right now</h2>
+    <p class="section-desc">
+      This is the exact same Pollinations.ai image API your Discord server will use.
+      Type any prompt and see what Elfy would generate.
+    </p>
+    <div class="playground-box">
+      <p class="hint">Powered by <a href="https://pollinations.ai" target="_blank" style="color:var(--lavender);">Pollinations.ai</a> · Flux model · free &amp; open</p>
+      <div class="prompt-row">
+        <input
+          type="text"
+          class="prompt-input"
+          id="promptInput"
+          placeholder="e.g. a cyberpunk cat in neon rain…"
+          maxlength="300"
+        />
+        <button class="gen-btn" id="genBtn" onclick="generateImage()">Generate ✨</button>
+      </div>
+      <div class="image-result" id="imageResult">
+        <p class="placeholder-text">Your generated image will appear here 🌸<br><span style="font-size:.8rem;opacity:.6;">Try any creative prompt above</span></p>
+      </div>
+      <div class="pollinations-badge">
+        🌸 Built with
+        <a href="https://pollinations.ai" target="_blank">pollinations.ai</a>
+        — free AI image generation
+      </div>
+    </div>
+  </section>
+
+  <!-- Commands -->
+  <section id="commands">
+    <div class="section-label">Slash commands</div>
+    <h2 class="section-title">Everything Elfy can do</h2>
+    <p class="section-desc">Beyond natural chat, Elfy has a handful of commands for managing context and threads.</p>
+    <div class="playground-box" style="max-width:100%;padding:0;overflow:hidden;">
+      <table class="cmd-table">
+        <thead>
+          <tr>
+            <th>Command</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="cmd">@Elfy [anything]</span></td>
+            <td class="cmd-desc">Mention Elfy in any channel to chat, ask questions, or request images.</td>
+          </tr>
+          <tr>
+            <td><span class="cmd">DM Elfy</span></td>
+            <td class="cmd-desc">Slide into her DMs for a private conversation with full memory.</td>
+          </tr>
+          <tr>
+            <td><span class="cmd">/forget</span></td>
+            <td class="cmd-desc">Clear channel history and reset to default personality.</td>
+          </tr>
+          <tr>
+            <td><span class="cmd">/forget [persona]</span></td>
+            <td class="cmd-desc">Clear history and give Elfy a new custom persona instantly.</td>
+          </tr>
+          <tr>
+            <td><span class="cmd">/createthread [name]</span></td>
+            <td class="cmd-desc">Create a dedicated thread where Elfy responds to every message.</td>
+          </tr>
+          <tr>
+            <td><span class="cmd">generate image of…</span></td>
+            <td class="cmd-desc">Natural language trigger — just describe an image in chat.</td>
+          </tr>
+          <tr>
+            <td><span class="cmd">[upload image] + "turn this into…"</span></td>
+            <td class="cmd-desc">Attach a photo and ask Elfy to restyle or transform it.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Setup -->
+  <section id="setup">
+    <div class="section-label">Get started</div>
+    <h2 class="section-title">Run Elfy in your server</h2>
+    <p class="section-desc">Self-hosted and open source. You'll need a Google Gemini key and a Discord bot token.</p>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h4>Clone the repository</h4>
+          <p>Download the source or <code class="code-inline">git clone</code> the repo to your machine.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h4>Get your API keys</h4>
+          <p>
+            Grab a free Gemini key from <a href="https://ai.google.dev" target="_blank">ai.google.dev</a>
+            and create a Discord bot at <a href="https://discord.com/developers/applications" target="_blank">discord.com/developers</a>.
+            Optionally grab a Pollinations.ai key at <a href="https://pollinations.ai" target="_blank">pollinations.ai</a>.
+          </p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h4>Create your <code class="code-inline">.env</code> file</h4>
+          <p>Add <code class="code-inline">GOOGLE_AI_KEY</code>, <code class="code-inline">DISCORD_BOT_TOKEN</code>, and optionally <code class="code-inline">POLLINATIONS_API_KEY</code>.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h4>Install &amp; run</h4>
+          <p>
+            <code class="code-inline">pip install -r requirements.txt</code> then
+            <code class="code-inline">python main.py</code> — Elfy is online!
+          </p>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:2.5rem;">
+      <a href="https://github.com" target="_blank" class="btn btn-primary">⭐ View Source on GitHub</a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p>
+      Built with ❤️ using <a href="https://pollinations.ai" target="_blank">pollinations.ai</a>
+      &amp; Google Gemini ·
+      <a href="https://github.com" target="_blank">Open source on GitHub</a>
+    </p>
+    <p style="margin-top:.5rem;opacity:.5;">
+      <a href="https://pollinations.ai" target="_blank">
+        <img src="https://pollinations.ai/p/pollinations_badge?width=120&height=28&nologo=true" 
+             alt="Built with pollinations.ai" 
+             style="height:24px;vertical-align:middle;margin-top:.25rem;border-radius:4px;"
+             onerror="this.style.display='none'" />
+      </a>
+    </p>
+  </footer>
+
+  <script>
+    async function generateImage() {
+      const input = document.getElementById('promptInput');
+      const btn   = document.getElementById('genBtn');
+      const box   = document.getElementById('imageResult');
+      const prompt = input.value.trim();
+
+      if (!prompt) {
+        input.focus();
+        return;
+      }
+
+      // Show loader
+      btn.disabled = true;
+      btn.textContent = 'Generating…';
+      box.innerHTML = '<div class="loader"></div>';
+
+      try {
+        const encoded = encodeURIComponent(prompt);
+        // Use Pollinations.ai image API — same endpoint the Discord bot uses
+        const url = `https://image.pollinations.ai/prompt/${encoded}?model=flux&width=768&height=768&nologo=true&enhance=true&seed=${Date.now()}`;
+
+        const img = new Image();
+        img.onload = () => {
+          box.innerHTML = '';
+          box.appendChild(img);
+        };
+        img.onerror = () => {
+          box.innerHTML = '<p class="placeholder-text">⚠️ Could not load image. Try a different prompt or check your connection.</p>';
+        };
+        img.src = url;
+        img.alt = prompt;
+        img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:.75rem;display:block;';
+
+        // Timeout fallback after 45s
+        setTimeout(() => {
+          if (!img.complete) {
+            box.innerHTML = '<p class="placeholder-text">⏱️ Taking longer than expected. <a href="' + url + '" target="_blank" style="color:var(--lavender)">Open image directly →</a></p>';
+          }
+        }, 45000);
+
+      } catch (err) {
+        box.innerHTML = '<p class="placeholder-text">Something went wrong. Please try again.</p>';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Generate ✨';
+      }
+    }
+
+    // Enter key support
+    document.getElementById('promptInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') generateImage();
+    });
+  </script>
+
+</body>
+</html>
