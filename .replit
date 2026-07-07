@@ -1,0 +1,47 @@
+modules = ["python-3.12"]
+[agent]
+expertMode = true
+stack = "BEST_EFFORT_FALLBACK"
+
+[nix]
+channel = "stable-25_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python main.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "Clear"
+mode = "sequential"
+author = 61315844
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "rm -f chat_history.db chat_history.dir chat_history.bak chat_history.dat chat_history chatdata"
+
+[deployment]
+deploymentTarget = "vm"
+run = ["python", "main.py"]
+
+[[ports]]
+localPort = 8080
+externalPort = 80

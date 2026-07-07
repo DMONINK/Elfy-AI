@@ -6,8 +6,8 @@ Image generation uses Pollinations.AI gen.pollinations.ai API with your API key.
 """
 
 import asyncio
+import base64
 import re
-import time
 import traceback
 import urllib.parse
 from functools import partial
@@ -18,8 +18,9 @@ from google import genai
 from google.genai import types
 
 from settings import GOOGLE_AI_KEY, POLLINATIONS_API_KEY
+import core_memory
 import dashboard_settings
-from storage import log_error
+from storage import ChatDataManager, log_error
 
 # Keywords that indicate a user wants an image generated
 IMAGE_KEYWORDS = [
@@ -50,17 +51,21 @@ IMAGE_EDIT_KEYWORDS = [
 # enhance=true lets Pollinations apply its own internal prompt boosting on
 # top of ours.
 #
-# IMPORTANT: this must be a genuine text-to-image model. "kontext" (the
-# previous value here) is Pollinations' image-EDITING model — it expects
-# an existing reference image via an `image=` URL parameter and transforms
-# it. generate_image() below never supplies one, so kontext was being
-# asked to "edit" nothing, which is exactly why output was bland, mostly
-# ignored the prompt, and only ever rendered one salient subject. flux is
-# a proper from-scratch generator and follows multi-element prompts (e.g.
-# "a cat catching a butterfly in a beautiful jungle") much more faithfully.
+# IMPORTANT: this must be a genuine text-to-image model. "kontext" is
+# Pollinations' image-EDITING model — it expects an existing reference
+# image via an `image=` URL parameter and transforms it. generate_image()
+# below never supplies one, so kontext was being asked to "edit" nothing,
+# which is exactly why output was bland, mostly ignored the prompt, and
+# only ever rendered one salient subject. flux is a proper from-scratch
+# generator and follows multi-element prompts (e.g. "a cat catching a
+# butterfly in a beautiful jungle") much more faithfully.
+#
+# NOTE: this had regressed back to "kontext" despite this exact comment
+# already explaining why that's wrong (a previous fix apparently didn't
+# make it into this checkout) — fixed back to "flux" here.
 POLLINATIONS_IMAGE_URL = (
     "https://gen.pollinations.ai/image/{prompt}"
-    "?model=kontext&width=1024&height=1024&nologo=true&enhance=true"
+    "?model=flux&width=1024&height=1024&nologo=true&enhance=true"
 )
 
 CHAT_MODEL = "gemini-3.1-flash-lite"
@@ -86,6 +91,40 @@ PROMPT_ENHANCER_INSTRUCTION = (
 # WELCOME_MESSAGE_INSTRUCTION now lives in settings.py (as the dashboard's
 # default for the editable "welcome_instruction" setting) — imported below.
 
+# Used by AIService._extract_core_memory (see core_memory.py for the
+# storage side of this). Asks Gemini what's actually worth remembering
+# long-term about ONE specific person, from a recent stretch of their
+# conversation with Elfy.
+MEMORY_EXTRACTION_INSTRUCTION = (
+    "You are Elfy's long-term memory system, not Elfy herself. You'll be "
+    "shown a recent stretch of conversation between Elfy and ONE specific "
+    "Discord user, plus what's already remembered about them. Identify "
+    "anything NEW and genuinely worth remembering long-term about THIS "
+    "PERSON specifically — stable facts, not passing small talk. "
+    "Good: their name/nickname, relationships, pets, job/school, ongoing "
+    "situations, strong preferences, running jokes, things they "
+    "explicitly asked to be remembered. "
+    "Bad: routine greetings, one-off questions, anything already listed "
+    "as known, anything that's more about Elfy than about them. "
+    "Output each new fact on its own line, as a short plain statement "
+    "under 15 words (e.g. 'Has a cat named Bean'). No bullets, no "
+    "numbering, no extra commentary. If there's truly nothing new worth "
+    "remembering, output exactly: NONE"
+)
+
+# Used by AIService._consolidate_core_memory when one person's fact list
+# has grown past the cap — compresses it back down instead of just
+# dropping the oldest entries, so a durable fact doesn't get bumped out
+# by a run of trivial recent ones.
+MEMORY_CONSOLIDATION_INSTRUCTION = (
+    "The list below of remembered facts about one Discord user has grown "
+    "too long. Compress it to at most {cap} lines: merge overlapping or "
+    "duplicate facts, drop the least useful or most trivial ones, and "
+    "keep whichever are most important and durable. Each line should be "
+    "a short plain statement under 15 words. Output ONLY the resulting "
+    "fact lines, one per line — no bullets, no numbering, no commentary."
+)
+
 
 def _contains_keyword(text: str, keywords: List[str]) -> bool:
     """
@@ -101,6 +140,33 @@ def _contains_keyword(text: str, keywords: List[str]) -> bool:
 
 def is_image_request(text: str) -> bool:
     return _contains_keyword(text, IMAGE_KEYWORDS)
+
+
+# Phrasings indicating someone wants to see ELFY HERSELF, as opposed to an
+# unrelated image request — used to route to generate_character_image()
+# (fixed appearance + reference-image conditioning) instead of the generic
+# generate_image() path, so she looks like the same character every time.
+_SELF_PORTRAIT_PATTERNS = [
+    r"\bof (you|yourself|elfy)\b",
+    r"\bdraw (you|yourself|elfy)\b",
+    r"\b(you|yourself|elfy)('?s)? (in|wearing|as|dressed)\b",
+    r"\bwhat (do |does )?(you|elfy) look like\b",
+    r"\byour(self)?'?s? (appearance|face|look|outfit)\b",
+    r"\bshow me (you|yourself|elfy)\b",
+    r"\bselfie\b",
+    r"\bpicture of (you|yourself|elfy)\b",
+]
+
+
+def is_self_portrait_request(text: str) -> bool:
+    """True if an already-detected image request is asking for Elfy
+    herself (e.g. "generate an image of you", "draw yourself", "picture of
+    elfy") rather than some unrelated subject. Deliberately keyword/regex
+    based, same style as is_image_request/_contains_keyword above, rather
+    than bare 'you'/'your' matching, which would misfire on unrelated
+    requests like "generate an image of your favorite food"."""
+    lower = text.lower()
+    return any(re.search(pattern, lower) for pattern in _SELF_PORTRAIT_PATTERNS)
 
 
 def is_image_edit_request(text: str, attachments: List[Dict[str, Any]]) -> bool:
@@ -156,8 +222,38 @@ class AIService:
         self.client = genai.Client(api_key=GOOGLE_AI_KEY)
         self._text_config = self._build_text_config()
 
-        self._chats: Dict[int, Any] = {}
+        # Conversation state is keyed by Discord USER ID, not channel ID.
+        # This is the fix for two problems at once: (1) the ever-growing
+        # per-channel history that made replies get slower the longer
+        # Elfy had been chatting, and (2) multiple people sharing one
+        # server channel previously meant they all shared the SAME
+        # Gemini history — one person's conversation leaking into
+        # another's context. Per-user keying fixes both: each person's
+        # rolling window is small and bounded (see CORE_MEMORY_WINDOW_SIZE
+        # in settings.py), and it's theirs alone no matter who else is
+        # talking to Elfy in the same channel.
+        #
+        # self._history holds ONLY the raw back-and-forth (no persona,
+        # no memory notes baked in) — see _build_session_history for how
+        # persona + core memory get layered on top fresh, every turn.
+        # There is deliberately no long-lived "chat session" object
+        # stored anywhere: a fresh one is created from bounded history
+        # right before every send and then discarded (see
+        # _send_message_sync) — chats.create() is a local, in-memory SDK
+        # call, not a network request, so doing this every turn costs
+        # nothing extra.
         self._history: Dict[int, List[Dict[str, Any]]] = {}
+
+        # Optional one-off custom persona set via /forget's `persona`
+        # argument — just for that one user, until their next /forget.
+        self._custom_persona: Dict[int, List[Dict[str, Any]]] = {}
+
+        # Cache of each user's current display name, refreshed on every
+        # generate_response() call, so background methods (memory
+        # extraction, session building) can reference "Micky" by name
+        # without needing it threaded through every call.
+        self._display_names: Dict[int, str] = {}
+
         # Recent welcome-message texts (most recent last), used so
         # generate_welcome_message() never sends the exact same greeting
         # twice in a row.
@@ -179,21 +275,24 @@ class AIService:
 
     def refresh_active_sessions(self) -> None:
         """
-        Re-apply current dashboard settings (generation params + safety
-        thresholds) to every channel with an active chat session, without
-        losing any conversation so far. Call this right after a dashboard
-        settings save so changes take effect immediately instead of
-        waiting for the next bot restart.
+        Re-read dashboard settings (generation params + safety
+        thresholds) into self._text_config so the NEXT message from
+        anyone picks them up immediately, instead of waiting for a bot
+        restart. Call this right after a dashboard settings save.
 
-        Personality changes are the one exception: BOT_TEMPLATE is only
-        the *opening* turn of a conversation, already baked into each
-        channel's history, so editing it only affects brand-new
-        conversations (or ones reset with /forget) — same as before the
-        dashboard existed, just now the "code" you'd edit is a text box.
+        There's nothing else to eagerly rebuild here: every user's live
+        session is created fresh from bounded history right before each
+        send (see _send_message_sync / _build_session_history), not
+        cached long-term, so it always reflects whatever's current the
+        moment it's built. That also means personality edits now apply
+        immediately to every ongoing conversation, not just new ones —
+        persona is injected fresh each turn rather than baked into old
+        history, unlike before this per-user rework (and there's no
+        longer a per-channel rebuild loop that a single corrupted
+        history entry could interrupt for everyone else — see
+        load_history for where that same safety property now lives).
         """
         self._text_config = self._build_text_config()
-        for channel_id, history in list(self._history.items()):
-            self._make_chat(channel_id, history)
 
     @staticmethod
     def _normalize_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -214,25 +313,68 @@ class AIService:
             normalized.append({**entry, "parts": norm_parts})
         return normalized
 
-    def _make_chat(self, channel_id: int, history: List[Dict[str, Any]]) -> None:
-        safe_history = self._normalize_history(history)
-        self._chats[channel_id] = self.client.chats.create(
-            model=CHAT_MODEL,
-            history=safe_history,
-            config=self._text_config,
-        )
-        self._history[channel_id] = list(history)
-
     def load_history(self, history_data: Dict[int, List[Dict[str, Any]]]) -> None:
-        for channel_id, history in history_data.items():
+        """
+        Restore each user's rolling conversation window from persisted
+        storage at startup (history_data is keyed by Discord user ID).
+
+        This is deliberately lightweight: it just populates
+        self._history. There's no eager per-user Gemini session created
+        here — the live session for each user is built fresh (persona +
+        current core memory + this window) the next time they actually
+        send a message, via _build_session_history / _send_message_sync.
+        That keeps startup fast no matter how many users have history.
+
+        The one thing this does before trusting saved data is confirm
+        it's still a shape the SDK will accept — via a throwaway, purely
+        local chats.create() call (no network request, so this is cheap
+        even for many users). If a particular user's saved history is
+        corrupted or incompatible, only that user resets to an empty
+        window; everyone else loads normally (same "one bad entry can't
+        take down everyone else" guarantee the old per-channel
+        refresh_active_sessions loop used to provide).
+        """
+        window_size = dashboard_settings.get("core_memory_window_size")
+        for user_id, history in history_data.items():
             try:
-                self._make_chat(channel_id, history)
+                self.client.chats.create(
+                    model=CHAT_MODEL,
+                    history=self._normalize_history(history),
+                    config=self._text_config,
+                )
+                self._history[user_id] = list(history)[-window_size:]
             except Exception as e:
                 print(
-                    f"[load_history] Skipping channel {channel_id} — "
-                    f"saved history incompatible (will start fresh): {e}"
+                    f"[load_history] Skipping user {user_id} — saved "
+                    f"history incompatible (will start fresh): {e}"
                 )
-                self._make_chat(channel_id, dashboard_settings.build_bot_template())
+                self._history[user_id] = []
+
+    def _build_session_history(self, user_id: int) -> List[Dict[str, Any]]:
+        """
+        Assemble the full history used to seed THIS turn's live Gemini
+        session: persona template (or this user's one-off /forget
+        persona override) + a freshly-built "what you remember about
+        them" note (never persisted — rebuilt from current core memory
+        every single turn, so it's always up to date) + this user's
+        bounded rolling window of actual recent exchanges.
+
+        This is what keeps per-reply cost bounded no matter how long
+        someone has been talking to Elfy in total, and what keeps
+        Micky's context from ever including Sarah's conversation with
+        her, even if they talk to her in the same shared channel.
+        """
+        template = self._custom_persona.get(user_id) or dashboard_settings.build_bot_template()
+        session_history = list(template)
+
+        display_name = self._display_names.get(user_id, "this user")
+        memory_note = core_memory.format_for_prompt(user_id, display_name)
+        if memory_note:
+            session_history.append({"role": "user", "parts": [{"text": memory_note}]})
+            session_history.append({"role": "model", "parts": [{"text": "Got it, noted 💭"}]})
+
+        session_history.extend(self._history.get(user_id, []))
+        return session_history
 
     # ------------------------------------------------------------------
     # Welcome messages — on_member_join greeting
@@ -432,6 +574,92 @@ class AIService:
             )
             raise
 
+    async def generate_character_image(self, prompt: str) -> Optional[bytes]:
+        """
+        Generate an image of Elfy herself, keeping her hairstyle/hair color/
+        face consistent across every generation — only the outfit, pose,
+        and setting should vary per request (see settings.py's
+        ELFY_APPEARANCE_DESCRIPTION / dashboard "elfy_appearance" setting).
+
+        Two layers, strongest first:
+          1. Reference-image conditioning: reuse a cached portrait of Elfy
+             (bootstrapped once below, and re-bootstrapped whenever the
+             appearance text is edited on the dashboard — see
+             storage.delete_elfy_reference_image) as an actual input image
+             to Gemini's native image-edit model (the same one
+             edit_image_with_attachment already uses for user uploads),
+             asking it to keep the same character but change the
+             outfit/scene. This gives real pixel-level consistency, not
+             just prompt-text similarity.
+          2. Prompt-only fallback: if there's no reference yet and
+             bootstrapping one fails, or the edit call itself fails, fall
+             back to the same Pollinations pipeline generate_image() uses,
+             with the fixed appearance description prepended to the
+             prompt. Never leaves the user with nothing just because the
+             stronger path had a hiccup.
+        """
+        appearance = dashboard_settings.get("elfy_appearance")
+        full_prompt = (
+            f"{appearance} Now depict her: {prompt}. Keep her hairstyle, hair "
+            "color, and face exactly as described above — only the outfit, "
+            "pose, and setting should change."
+        )
+
+        reference_b64 = ChatDataManager.load_elfy_reference_image()
+        if reference_b64 is None:
+            reference_b64 = await self._bootstrap_reference_image(appearance)
+
+        if reference_b64 is not None:
+            try:
+                reference_bytes = base64.b64decode(reference_b64)
+                edited = await self.edit_image_with_attachment(
+                    full_prompt,
+                    [{"mime_type": "image/png", "data": reference_bytes}],
+                )
+                if edited is not None:
+                    return edited
+                print("[generate_character_image] Reference-image edit returned nothing, falling back")
+            except Exception as e:
+                print(f"[generate_character_image] Reference-image path failed, falling back: {e}")
+
+        # Fallback: same Pollinations pipeline generate_image() uses, just
+        # with the fixed appearance baked into the prompt text instead of
+        # an actual reference image. Wrapped here (generate_image() itself
+        # re-raises on failure) so a hiccup falls back to "no image" rather
+        # than an unhandled exception.
+        try:
+            return await self.generate_image(full_prompt)
+        except Exception as e:
+            print(f"[generate_character_image] Fallback generation also failed: {e}")
+            return None
+
+    async def _bootstrap_reference_image(self, appearance: str) -> Optional[str]:
+        """
+        Generate and cache a neutral reference portrait of Elfy the first
+        time one's needed, so future self-portrait requests can condition
+        on an actual image instead of prompt text alone. Returns the
+        base64-encoded image, or None if generation itself failed (in
+        which case generate_character_image() falls back to prompt-only).
+        """
+        try:
+            image_bytes = await self.generate_image(
+                f"{appearance} A simple, friendly portrait, plain neutral "
+                "background, casual everyday outfit."
+            )
+            if image_bytes is None:
+                return None
+            b64_data = base64.b64encode(image_bytes).decode("ascii")
+            try:
+                ChatDataManager.save_elfy_reference_image(b64_data)
+            except Exception as e:
+                # Storage rejected it (e.g. size limits) — still usable for
+                # *this* request, just won't be cached for next time.
+                print(f"[_bootstrap_reference_image] Couldn't cache reference image: {e}")
+            return b64_data
+        except Exception as e:
+            print(f"[_bootstrap_reference_image] Failed to bootstrap reference image: {e}")
+            return None
+
     # ------------------------------------------------------------------
     # Reply length enforcement — cap AI chat replies at MAX_REPLY_LINES
     # ------------------------------------------------------------------
@@ -503,7 +731,7 @@ class AIService:
     # Text chat
     # ------------------------------------------------------------------
 
-    def _send_message_sync(self, channel_id: int, prompt_parts: List[Any]) -> Any:
+    def _send_message_sync(self, user_id: int, prompt_parts: List[Any]) -> Any:
         # chats.send_message() accepts: a single str/File/Part, OR a list of
         # str/File/FileDict/Part/PartDict. It does NOT accept a types.Content
         # object directly (that raises "Message must be a valid part type").
@@ -526,27 +754,52 @@ class AIService:
         else:
             message = [_to_part(p) for p in prompt_parts]
 
-        response = self._chats[channel_id].send_message(message)
+        # Build a session fresh from bounded history (persona + current
+        # core-memory note + this user's trimmed rolling window) every
+        # single turn, then use it once and let it go. chats.create() is
+        # local/in-memory — it doesn't call the API — so this costs
+        # nothing extra over reusing a stored session object, and it's
+        # what guarantees the prompt sent to Gemini never grows no matter
+        # how long this person has been talking to Elfy in total.
+        session_history = self._build_session_history(user_id)
+        chat = self.client.chats.create(
+            model=CHAT_MODEL,
+            history=self._normalize_history(session_history),
+            config=self._text_config,
+        )
+        response = chat.send_message(message)
 
         user_text = " ".join(
             p if isinstance(p, str) else "" for p in prompt_parts
         ).strip()
+        window = self._history.setdefault(user_id, [])
         if user_text:
-            self._history[channel_id].append(
-                {"role": "user", "parts": [user_text]}
-            )
+            window.append({"role": "user", "parts": [user_text]})
         if response and response.text:
-            self._history[channel_id].append(
-                {"role": "model", "parts": [response.text]}
-            )
+            window.append({"role": "model", "parts": [response.text]})
+
+        # Trim immediately, not just at read time — this is what keeps
+        # both the next prompt AND what gets persisted to storage
+        # bounded, rather than only bounding what's sent to Gemini while
+        # quietly letting storage grow forever.
+        window_size = dashboard_settings.get("core_memory_window_size")
+        if len(window) > window_size:
+            del window[: len(window) - window_size]
+
         return response
 
     async def generate_response(
         self,
-        channel_id: int,
+        user_id: int,
         attachments: List[Dict[str, Any]],
         text: str,
+        display_name: str = "this user",
     ) -> Tuple[str, Optional[bytes]]:
+        # Cache the display name so background helpers (memory-note
+        # formatting, extraction prompts) can refer to this person by
+        # name without needing it threaded through every method call.
+        self._display_names[user_id] = display_name
+
         # Image-intent detection and image prompts must only ever be built
         # from what the sender themselves said — never a prepended VIP
         # note or an appended reply-quote from someone else's message.
@@ -567,7 +820,10 @@ class AIService:
 
         # ---- Image generation path (text-to-image, no input image) ----
         if is_image_request(spoken_text):
-            image_bytes = await self.generate_image(spoken_text)
+            if is_self_portrait_request(spoken_text):
+                image_bytes = await self.generate_character_image(spoken_text)
+            else:
+                image_bytes = await self.generate_image(spoken_text)
             if image_bytes:
                 return ("Here's your generated image! 🎨", image_bytes)
             else:
@@ -583,13 +839,10 @@ class AIService:
             prompt_parts: List[Any] = attachments.copy()
             prompt_parts.append(text)
 
-            if channel_id not in self._chats:
-                self._make_chat(channel_id, dashboard_settings.build_bot_template())
-
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                partial(self._send_message_sync, channel_id, prompt_parts),
+                partial(self._send_message_sync, user_id, prompt_parts),
             )
 
             raw_text = response.text if response else ""
@@ -598,16 +851,27 @@ class AIService:
             # If we shortened it, keep the persisted/in-context history in
             # sync with what was actually sent — otherwise the model's own
             # memory of "what it said" would drift from what users saw.
-            if final_text != raw_text and self._history.get(channel_id):
-                last_entry = self._history[channel_id][-1]
+            if final_text != raw_text and self._history.get(user_id):
+                last_entry = self._history[user_id][-1]
                 if last_entry.get('role') == 'model':
                     last_entry['parts'] = [final_text]
+
+            # Background: every CORE_MEMORY_EXTRACTION_INTERVAL messages,
+            # distill what's actually worth remembering long-term about
+            # this specific person (see core_memory.py). Scheduled as a
+            # fire-and-forget task — never blocks or can fail this reply.
+            # The counter resets now (before the task even runs) so a
+            # burst of fast messages can't trigger it twice in a row.
+            count = core_memory.bump_message_count(user_id)
+            if count >= dashboard_settings.get("core_memory_extraction_interval"):
+                core_memory.reset_message_count(user_id)
+                asyncio.create_task(self._extract_core_memory(user_id, display_name))
 
             return (final_text, None)
 
         except Exception:
             try:
-                history_info = str(self._history.get(channel_id, []))
+                history_info = str(self._history.get(user_id, []))
                 candidates = str(response.candidates) if response else "N/A"
                 parts_info = str(response.parts) if response else "N/A"
                 prompt_feedbacks = str(response.prompt_feedbacks) if response else "N/A"
@@ -624,18 +888,130 @@ class AIService:
             )
             raise
 
-    def reset_channel_history(
+    def reset_user_history(
         self,
-        channel_id: int,
+        user_id: int,
         custom_template: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        if custom_template is None:
-            custom_template = dashboard_settings.build_bot_template()
-        self._make_chat(channel_id, list(custom_template))
+        """Clear this user's rolling conversation window and, if given, set
+        a one-off custom persona override just for them (used by /forget's
+        optional `persona` argument) until their next /forget. Does NOT
+        touch their core memories — see core_memory.clear() for that."""
+        self._history[user_id] = []
+        if custom_template is not None:
+            self._custom_persona[user_id] = list(custom_template)
+        else:
+            self._custom_persona.pop(user_id, None)
 
-    def delete_channel_history(self, channel_id: int) -> None:
-        self._chats.pop(channel_id, None)
-        self._history.pop(channel_id, None)
+    def delete_user_history(self, user_id: int) -> None:
+        """Clear this user's rolling conversation window and any one-off
+        custom persona override. Does NOT touch their core memories —
+        see core_memory.clear() for that (commands.py's /forget calls
+        both, for a genuinely clean slate)."""
+        self._history.pop(user_id, None)
+        self._custom_persona.pop(user_id, None)
 
-    def get_history(self, channel_id: int) -> List[Dict[str, Any]]:
-        return self._history.get(channel_id, [])
+    def get_history(self, user_id: int) -> List[Dict[str, Any]]:
+        return self._history.get(user_id, [])
+
+    # ------------------------------------------------------------------
+    # Core memory extraction — the only place besides the main chat path
+    # that talks to Gemini about a user's conversation (see core_memory.py
+    # for the storage/formatting side of this).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _flatten_parts(parts: List[Any]) -> str:
+        """Turn a history entry's parts list (each either a plain string
+        or a {"text": ...} dict — see _normalize_history) into plain
+        text, for feeding a conversation window into a Gemini prompt."""
+        texts = []
+        for p in parts:
+            if isinstance(p, str):
+                texts.append(p)
+            elif isinstance(p, dict) and "text" in p:
+                texts.append(p["text"])
+        return " ".join(texts)
+
+    async def _extract_core_memory(self, user_id: int, display_name: str) -> None:
+        """
+        Background task (see generate_response's asyncio.create_task
+        call): ask Gemini what's actually worth remembering long-term
+        about this specific person from their current rolling window,
+        merge any new facts into their core memory, and consolidate if
+        that pushes them over the cap. Runs fire-and-forget — any
+        failure here is logged and swallowed, never surfaced to the
+        user or allowed to affect their actual reply.
+        """
+        try:
+            recent_turns = self._history.get(user_id, [])
+            if not recent_turns:
+                return
+
+            conversation_blob = "\n".join(
+                f"{turn.get('role', 'user')}: {self._flatten_parts(turn.get('parts', []))}"
+                for turn in recent_turns
+            )
+            existing_facts = core_memory.get_facts(user_id)
+            known_block = (
+                f"Already known: {'; '.join(existing_facts)}"
+                if existing_facts else "Already known: nothing yet"
+            )
+
+            def _call() -> Any:
+                return self.client.models.generate_content(
+                    model=PROMPT_ENHANCER_MODEL,
+                    contents=[
+                        MEMORY_EXTRACTION_INSTRUCTION,
+                        known_block,
+                        f"Recent conversation with {display_name}:\n{conversation_blob}",
+                    ],
+                    config=types.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=250,
+                    ),
+                )
+
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, _call)
+            new_facts = core_memory.parse_fact_lines(response.text or "")
+            if not new_facts:
+                return
+
+            cap = dashboard_settings.get("core_memory_fact_cap")
+            over_cap = core_memory.merge_new_facts(user_id, new_facts, cap=cap)
+            if over_cap:
+                await self._consolidate_core_memory(user_id, cap)
+
+        except Exception as e:
+            print(f"[core_memory extraction] Failed for user {user_id}: {e}")
+
+    async def _consolidate_core_memory(self, user_id: int, cap: int) -> None:
+        """
+        Compress one user's fact list back down to `cap` entries via
+        Gemini (merging overlaps, dropping trivia) rather than blindly
+        dropping the oldest ones. Falls back to keeping just the most
+        recent `cap` facts if the consolidation call itself fails, so a
+        long list never gets stuck permanently over the cap.
+        """
+        facts = core_memory.get_facts(user_id)
+        instruction = MEMORY_CONSOLIDATION_INSTRUCTION.format(cap=cap)
+
+        def _call() -> Any:
+            return self.client.models.generate_content(
+                model=PROMPT_ENHANCER_MODEL,
+                contents=[instruction, "\n".join(f"- {f}" for f in facts)],
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=400,
+                ),
+            )
+
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, _call)
+            consolidated = core_memory.parse_fact_lines(response.text or "")
+            core_memory.replace_facts(user_id, consolidated[:cap] if consolidated else facts[-cap:])
+        except Exception as e:
+            print(f"[core_memory consolidation] Failed for user {user_id}, keeping most recent {cap}: {e}")
+            core_memory.replace_facts(user_id, facts[-cap:])

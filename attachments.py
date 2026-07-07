@@ -70,23 +70,27 @@ async def get_attachment_data(attachments: List[Attachment]) -> Optional[List[Di
         List of dictionaries with 'mime_type' and 'data' keys, or None if error
     """
     result = []
-    
-    for attachment in attachments:
-        try:
-            async with aiohttp.ClientSession() as session:
+
+    # One shared session for every attachment in this call, instead of
+    # opening/closing a brand new TCP+TLS connection per attachment — a
+    # message with several images was paying that setup cost repeatedly
+    # for no reason.
+    async with aiohttp.ClientSession() as session:
+        for attachment in attachments:
+            try:
                 async with session.get(attachment.url) as resp:
                     if resp.status != 200:
                         return None
-                    
+
                     attachment_data = await resp.read()
                     mime_type = _get_mime_type(attachment.filename)
-                    
+
                     if mime_type:
                         result.append({
                             "mime_type": mime_type,
                             "data": attachment_data
                         })
-        except Exception:
-            return None
-    
+            except Exception:
+                return None
+
     return result
