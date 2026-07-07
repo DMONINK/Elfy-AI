@@ -60,7 +60,7 @@ One shared password locks the whole thing down. No password set? It stays sealed
 | Page | Purpose |
 |---|---|
 | **Overview** | Big stats at a glance. |
-| **Servers** | Every server she's in + her channel there. |
+| **Servers** | Every server she's in. |
 | **VIPs** | Add, edit, remove, re-arm greetings. |
 | **Settings** | Personality, creativity sliders, reply length, safety filters, owners. |
 
