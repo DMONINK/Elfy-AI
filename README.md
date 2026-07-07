@@ -3,7 +3,7 @@
 
 # Elfy — Gemini-Powered Discord Companion Bot
 
-Elfy is a persistent, personality-driven Discord chatbot built on Google's
+Elfy is a persistent, personality-driven Discord chatbot inspired by [hihumanzone's Gemini-Discord-Bot](https://github.com/hihumanzone/Gemini-Discord-Bot) built on Google's
 Gemini API. She holds real per-person conversations (not shared per-channel
 ones), remembers durable facts about individual users across restarts,
 generates and edits images, gives configured people ("VIPs") their own
