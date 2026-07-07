@@ -13,17 +13,7 @@ zero code edits or redeploys required for most changes.
 
 This document describes **everything the current codebase actually does**,
 file by file and feature by feature, plus how to run it and what to expect
-from each piece. It reflects the code as of this scan — if you change
-behavior, please keep this file in sync.
-
-> **Note on this README:** the version of this file previously at the
-> project root was actually the `tests/` folder's own README (a guide to
-> running the project's offline test suite), not a description of the bot
-> itself. That content, if you still need it, belongs in `tests/README.md`
-> — this file replaces it as the actual project README. The `tests/`
-> directory itself (referenced throughout `CHANGES.md`) is not part of
-> this specific code drop, so its contents aren't described here beyond
-> what `CHANGES.md` documents about it.
+from each piece.
 
 ---
 
@@ -68,112 +58,13 @@ one-time greeting, and exposes almost all of the above — personality,
 generation parameters, safety thresholds, VIP roster, live conversation
 logs — through a small self-hosted web control panel.
 
-## Architecture overview
-
-Elfy runs as a single Python process (`main.py`). Inside that one process,
-two things run concurrently on the same `asyncio` event loop:
-
-- **The Discord bot itself** (`discord.py`'s `commands.Bot`), handling
-  gateway events (messages, member joins) and slash commands.
-- **The web dashboard** (an `aiohttp` web app), served on port `8080`.
-
-Running both in the same event loop (rather than a separate thread or
-process for the dashboard) is a deliberate choice: it lets dashboard
-request handlers read live bot state directly (`bot.guilds`, active AI
-sessions) and safely `await` real bot calls — e.g. updating Discord
-presence the instant a setting is saved — without any cross-thread
-locking or message-passing.
-
-High-level request flow for an ordinary chat message:
-
-```
-Discord message
-  -> main.py's on_message
-    -> message_handler.handle_message()
-      -> gating: is it a DM / the designated channel / a tracked thread?
-      -> VIP one-time greeting check
-      -> attachment download (attachments.py)
-      -> message batching buffer (message_handler.py)
-        -> (after a short debounce) construct the query text
-          -> ai_service.AIService.generate_response()
-            -> image request?  -> Pollinations or Gemini image-edit model
-            -> otherwise       -> Gemini chat model, per-user session
-          -> reply sent to Discord (split if too long)
-          -> chat history persisted (storage.py)
-          -> exchange logged for the dashboard (conversation_log.py)
-          -> every N messages: background core-memory extraction
-```
-
 ## Core concept: per-user memory, not per-channel history
 
-This is the single most important architectural fact about Elfy, and it
-shapes almost every other feature, so it's worth explaining up front.
-
-**The old model (no longer how this codebase works):** conversation
-history used to be keyed by Discord *channel*. Everyone talking to Elfy in
-the same channel shared one running conversation with her, and that
-conversation grew without bound the longer the bot stayed up — replies got
-slower and slower the more had been said, and one person's private
-conversation leaked into what Elfy "remembered" while talking to someone
-else in the same channel.
-
-**The current model:** Elfy's conversation state is keyed by Discord
+Elfy's conversation state is keyed by Discord
 **user ID**. Every person who talks to her — in a server's chat channel,
 in a tracked thread, or in DMs — gets their own private, bounded
 conversation context, entirely separate from anyone else's, even if
 they're all typing in the exact same channel.
-
-This is implemented as two separate layers, both scoped per-user:
-
-1. **Rolling short-term window** (`ai_service.py`'s `self._history`, sized
-   by the `core_memory_window_size` setting, default **12** entries). This
-   is the actual recent back-and-forth — the last several user/model turns
-   — and it's what gets re-sent to Gemini on literally every reply. Once a
-   person's window exceeds this size, the oldest entries are dropped
-   immediately (not just at read time), so both the next prompt sent to
-   Gemini *and* what's persisted to storage stay bounded no matter how
-   long someone has been talking to Elfy in total. This is the main lever
-   on per-reply latency and API cost.
-
-2. **Durable "core memory"** (`core_memory.py`, capped by
-   `core_memory_fact_cap`, default **25** facts per person). Separately
-   from the rolling window, every `core_memory_extraction_interval`
-   messages (default **15**) from a given person, a background task asks
-   Gemini to distill anything genuinely worth remembering long-term about
-   *that specific person* — their name/nickname, relationships, pets,
-   job/school, ongoing situations, strong preferences, running jokes,
-   things they explicitly asked to be remembered — as opposed to routine
-   greetings or one-off small talk. New facts are merged into that
-   person's stored list (deduplicated, case-insensitively). If the list
-   grows past the cap, a second Gemini call *consolidates* it — merging
-   overlapping facts and dropping the least useful ones — rather than
-   simply chopping off the oldest entries, so a durable fact doesn't get
-   silently evicted by a run of trivial recent ones. If that consolidation
-   call itself fails for any reason, the code falls back to keeping just
-   the most recent `cap` facts, so a fact list can never get permanently
-   stuck over its limit.
-
-Every single turn, right before sending a message to Gemini, Elfy builds a
-brand-new (never persisted, never reused) "session" from scratch, made of:
-her personality template (or a person's one-off custom persona set via
-`/forget <persona>`) -> a freshly formatted "what you remember about this
-person" note built live from their current core memory -> their bounded
-rolling window of actual recent messages. Building this fresh every turn
-is cheap (it's a local, in-memory SDK call, not a network request) and is
-what guarantees a personality change made on the dashboard takes effect on
-someone's *very next message*, even mid-conversation — nothing about an
-ongoing chat is "baked in" the way it would be with one long-lived session
-object.
-
-Two consequences worth knowing:
-
-- **`/forget` only ever clears *your own* conversation and memory.** In a
-  shared channel, one person running `/forget` has zero effect on anyone
-  else's conversation with Elfy.
-- **`/mymemories` only ever shows *your own* stored facts** — there's no
-  way to view what Elfy remembers about someone else through the bot
-  itself (the dashboard's VIP page is a separate, distinct system — see
-  below — and doesn't expose this either).
 
 ## Everything Elfy can do in chat
 
@@ -323,13 +214,6 @@ there's no in-process way to trigger a fresh `python main.py` otherwise.
 **This auto-relaunch only applies to a published Deployment** — running
 the bot via Replit's in-editor Run button for local development will *not*
 auto-restart after this command; you'd need to click Run again yourself.
-
-> **A note on `/help`'s own listed commands:** the plain-text/embed
-> content Elfy shows for `/help` and "@Elfy help" currently only lists
-> `/help`, `/forget`, `/createthread`, `/setchat`, and `/status` — it
-> predates `/mymemories` and `/botrestart` being added and hasn't been
-> updated to mention them. All seven commands above are real and
-> functional regardless of what the help text itself currently lists.
 
 ## The VIP system
 
