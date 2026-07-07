@@ -1,3 +1,6 @@
+
+[![Try Now](https://img.shields.io/badge/Try%20Now-%F0%9F%8C%B8%20Live%20Demo-b19fdd?style=for-the-badge)](https://dmonink.github.io/Elfy-Image-Generator/)
+
 # Elfy — Gemini-Powered Discord Companion Bot
 
 Elfy is a persistent, personality-driven Discord chatbot built on Google's
