@@ -32,8 +32,6 @@ Every command works two ways: as a slash command, or by tagging her (`@Elfy forg
 | `/setchat <channel>` | Sets her one home channel |
 | `/setwelcome <text>` | Adds your own line to new-member greetings |
 
-Owner-only, tag-only (never shown as slash commands, on purpose): `status`, `restart`, `memories <id>`, `mhelp`.
-
 ## 🧠 How her memory works
 
 Two layers. A short **rolling window** per channel — what's actually being said right now. And long-term **core memory** per person *per server* — the facts worth keeping. Nothing you tell her in one server ever follows you into another.
