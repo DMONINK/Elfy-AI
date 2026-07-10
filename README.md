@@ -1,8 +1,10 @@
-# 🧚 Elfy
+[![Try Now](https://img.shields.io/badge/Try%20Now-%F0%9F%8C%B8%20Live%20Demo-b19fdd?style=for-the-badge)](https://dmonink.github.io/Elfy-Image-Generator/)
 
-**A Gemini-powered Discord companion with a memory that actually works.**
+# 🌙 Elfy
 
-Elfy chats like a real presence in your server, remembers who you are (without mixing you up with anyone else), draws pictures of herself and anything else, and adapts to whatever personality you give her — all backed by a self-hosted web dashboard.
+**A Discord bot with a soul, not a script.**
+
+Elfy (inspired by [hihumanzone's Gemini-Discord-Bot](https://github.com/hihumanzone/Gemini-Discord-Bot)) chats like a real presence in your server, remembers who you are (without mixing you up with anyone else), draws pictures of herself and anything else, and adapts to whatever personality you give her — all backed by a self-hosted web dashboard.
 
 ---
 
@@ -30,15 +32,13 @@ Every command works two ways: as a slash command, or by tagging her (`@Elfy forg
 | `/setchat <channel>` | Sets her one home channel |
 | `/setwelcome <text>` | Adds your own line to new-member greetings |
 
-Owner-only, tag-only (never shown as slash commands, on purpose): `status`, `restart`, `memories <id>`, `mhelp`.
-
 ## 🧠 How her memory works
 
 Two layers. A short **rolling window** per channel — what's actually being said right now. And long-term **core memory** per person *per server* — the facts worth keeping. Nothing you tell her in one server ever follows you into another.
 
 ## 🏗️ Under the hood
 
-Discord bot + web dashboard, one process, one event loop. Gemini for chat, memory, and image editing. Pollinations for general image generation. Replit DB (or local `shelve` when running elsewhere) for storage.
+Discord bot + web dashboard, one process, one event loop. Gemini for chat, memory, and image editing. Pollinations for general image generation. Local `shelve` for storage.
 
 ## 🚀 Running it
 
