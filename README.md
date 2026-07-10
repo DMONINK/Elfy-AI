@@ -1,8 +1,10 @@
-# 🧚 Elfy
+[![Try Now](https://img.shields.io/badge/Try%20Now-%F0%9F%8C%B8%20Live%20Demo-b19fdd?style=for-the-badge)](https://dmonink.github.io/Elfy-Image-Generator/)
 
-**A Gemini-powered Discord companion with a memory that actually works.**
+# 🌙 Elfy
 
-Elfy chats like a real presence in your server, remembers who you are (without mixing you up with anyone else), draws pictures of herself and anything else, and adapts to whatever personality you give her — all backed by a self-hosted web dashboard.
+**A Discord bot with a soul, not a script.**
+
+Elfy (inspired by [hihumanzone's Gemini-Discord-Bot](https://github.com/hihumanzone/Gemini-Discord-Bot)) chats like a real presence in your server, remembers who you are (without mixing you up with anyone else), draws pictures of herself and anything else, and adapts to whatever personality you give her — all backed by a self-hosted web dashboard.
 
 ---
 
