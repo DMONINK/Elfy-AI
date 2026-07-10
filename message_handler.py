@@ -8,12 +8,13 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
+import discord
 from discord import DMChannel, File, Message
 
 import conversation_log
 import dashboard_settings
 from attachments import get_attachment_data
-from help_command import is_help_mention, send_help_mention
+from mention_commands import handle_mention_command
 from vip_users import get_greeting, get_vip_note, mark_greeted, needs_greeting
 
 # ── Message batching (see enqueue_for_batch / handle_message) ───────────────
@@ -368,26 +369,36 @@ async def _process_batch(
     handle_message used to run inline per-message.
     """
     last_message = messages[-1]
+    guild_id = last_message.guild.id if last_message.guild else None
+    channel_id = last_message.channel.id
     try:
         async with last_message.channel.typing():
             query = await construct_batched_query(messages, attachments)
 
-            # Keyed by the author's user ID, not the channel — Elfy's
-            # conversation context follows the PERSON now, so it stays
-            # bounded regardless of channel traffic and never mixes with
-            # anyone else talking to her in the same channel (see
-            # ai_service.py / core_memory.py for why). A batch is always
-            # one (channel, author) pair already (see enqueue_for_batch),
-            # so last_message.author is the same author for the whole
-            # burst being processed here.
-            response_text, image_bytes = await ai_service.generate_response(
+            # Keyed by (guild_id, channel_id), not the author's user ID —
+            # Elfy's conversation context follows the CHANNEL now, so the
+            # same person's chat in one server can never surface while
+            # she's replying in a different server (see ai_service.py /
+            # core_memory.py / CHANGES.md for the cross-server leak this
+            # replaced, and why channel-scoping is the fix). A batch is
+            # always one (channel, author) pair already (see
+            # enqueue_for_batch), so last_message.author is the same
+            # author for the whole burst being processed here.
+            response_text, image_bytes, requested_nickname = await ai_service.generate_response(
+                guild_id,
+                channel_id,
                 last_message.author.id,
                 attachments,
                 query,
                 display_name=last_message.author.display_name,
             )
 
-            if image_bytes is not None:
+            if requested_nickname is not None:
+                response_text = await _apply_nickname_change(last_message, requested_nickname)
+                await split_and_send_messages(
+                    last_message, response_text, dashboard_settings.get("max_message_length")
+                )
+            elif image_bytes is not None:
                 image_file = File(
                     fp=io.BytesIO(image_bytes),
                     filename="generated_image.png",
@@ -398,10 +409,10 @@ async def _process_batch(
                     max_length = dashboard_settings.get("max_message_length")
                     await split_and_send_messages(last_message, response_text, max_length)
 
-            if image_bytes is None:
+            if image_bytes is None and requested_nickname is None:
                 storage_manager.save_chat_history(
-                    last_message.author.id,
-                    ai_service.get_history(last_message.author.id),
+                    (guild_id, channel_id),
+                    ai_service.get_channel_history(guild_id, channel_id),
                 )
 
             # Log every message in the burst as one exchange (rather than
@@ -426,8 +437,29 @@ async def _process_batch(
             await last_message.channel.send("An error occurred while processing your message.")
 
 
+async def _apply_nickname_change(message: Message, requested_nickname: str) -> str:
+    """
+    Actually perform the Discord-side nickname change ai_service.py only
+    detected and signaled (see generate_response's docstring for why the
+    API call lives here rather than in ai_service.py). Returns the reply
+    text to send back, covering every outcome the spec calls for: no
+    guild (DMs), missing permission, and any other failure.
+    """
+    if message.guild is None:
+        return "I can only change my nickname inside a server, not in DMs."
+    try:
+        await message.guild.me.edit(nick=requested_nickname)
+        return f"Done — I'm **{requested_nickname}** here now! ✨"
+    except discord.Forbidden:
+        return "I don't have permission to change my name in this server."
+    except discord.HTTPException as e:
+        print(f"[nickname change] Failed in guild {message.guild.id}: {e}")
+        return "Something went wrong trying to change my name — sorry!"
+
+
 async def handle_message(
     message: Message,
+    bot,
     ai_service,
     storage_manager,
     chat_channel_manager,
@@ -438,6 +470,9 @@ async def handle_message(
 
     Args:
         message: The Discord message
+        bot: The Discord bot/client instance — needed by mention_commands.py
+            for the owner-only status/restart/memory-lookup commands
+            (bot.guilds, bot.launched_at, bot.close(), bot.get_guild())
         ai_service: The AI service instance
         storage_manager: The storage manager instance
         chat_channel_manager: Tracks each server's designated chat channel
@@ -452,10 +487,16 @@ async def handle_message(
     if message.author.bot:
         return
 
-    # "@Elfy help" short-circuits everything below — works in any channel,
-    # including ones that would otherwise get a redirect or be ignored.
-    if is_help_mention(message):
-        await send_help_mention(message)
+    # "@Elfy <command>" short-circuits everything below — works in any
+    # channel, including ones that would otherwise get a redirect or be
+    # ignored, giving every command the same reach slash commands already
+    # have. Covers help, every public command (forget/forgetme/
+    # mymemories/createthread/setchat/setwelcome), and — owner only,
+    # never registered as slash commands at all — mhelp/status/restart/
+    # cross-server memory lookup. See mention_commands.py.
+    if await handle_mention_command(
+        message, bot, ai_service, storage_manager, chat_channel_manager, tracked_threads_manager
+    ):
         return
 
     guild_id = message.guild.id if message.guild else None

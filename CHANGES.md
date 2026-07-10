@@ -1,3 +1,112 @@
+# Cross-server memory leak fixed (P0) + channel-locked memory + command batch + selfie routing fix + nickname changes
+
+Fixed the cross-server data leak first and verified it, then did the rest
+of the batch on top of the new schema so nothing had to be built twice.
+
+## The P0 leak
+
+Neither memory layer recorded guild ID at all — `userhistory:{user_id}`
+and `coremem:{user_id}` were both pure user-ID keys, so the same Discord
+account chatting in two different servers shared one conversation and one
+set of durable facts. Root cause was the schema, not scattered call-site
+bugs — confirmed by grepping every read/write/injection site.
+
+Fixed by re-keying both layers:
+- Short-term rolling window: `(guild_id, channel_id)`, new
+  `channelhistory:` prefix.
+- Core memory (durable facts): `(guild_id, user_id)`, new
+  `guildcoremem:` prefix.
+
+Both old prefixes (`userhistory:`, `coremem:`) are dead — never read by
+current code, left in place as harmless orphaned data, same pattern this
+codebase already used once before (see the next entry below, for the
+`history:` -> `userhistory:` migration that fixed a different bug).
+
+Tests: `tests/test_storage.py` and `tests/test_core_memory.py` reproduce
+the exact scenario (same user, two different guilds, same numeric
+channel/user-id component) and confirm zero bleed at both the storage and
+in-memory-cache level. `tests/test_ai_service.py` reproduces it again
+end-to-end through `generate_response()` itself, inspecting exactly what
+gets sent to (a fake) Gemini for each reply.
+
+## Architecture change: user-locked -> channel-locked, core memory now per-(guild, person)
+
+General conversational memory is channel-scoped now (this *is* the P0 fix
+above — same change). Core memory stays scoped to a person, but now
+per-(guild, person) rather than globally per-person, closing the same
+leak for durable facts. Two commands deliberately reach across that
+per-guild isolation: `/forgetme` (wipes a person's core memory in every
+guild at once) and the new owner-only `@Elfy memories <id>` lookup
+(read-only, shows every guild a person has a record in).
+
+## Commands
+
+- `/forget` — now channel-scoped (used to be user-scoped). The optional
+  persona override moved with it, so it's now a channel's persona, not a
+  person's.
+- `/forgetme` — new. The user-scoped wipe `/forget` used to do, now
+  reaching across every guild instead of just the current one.
+- New owner-only `@Elfy memories <user id>` — cross-server lookup, reuses
+  `dashboard_settings.owner_ids()` (the live, dashboard-editable check
+  `/botrestart` already used — NOT `settings.is_owner()`, which turned
+  out to be dead code, never called anywhere in the codebase).
+- New `/setwelcome <text>` — per-server, appends to the existing welcome
+  message assembly in `welcome.py` rather than a parallel path.
+- `/help` split into public + owner-only `mhelp` (tag-only, adds
+  restart/status/memory-lookup on top of everything `/help` shows).
+  `/status` and `/botrestart` moved from public slash commands to
+  owner-only, tag-only commands — flagged this explicitly since it's a
+  real behavior change, not just a refactor.
+- Every public command now works both as a slash command and as
+  `@Elfy <command>` (new `mention_commands.py`), sharing one
+  implementation per command (`commands.py`'s `do_*` functions) rather
+  than duplicating logic. Owner-only commands are tag-only and never
+  registered as slash commands at all, and a non-owner typing one of
+  those words gets treated as if it meant nothing — no "no permission"
+  reply either, since that would still confirm the word does something.
+- Every command's response auto-deletes after 10 seconds now, except
+  `/help`/`mhelp` — those used to auto-delete after 5 seconds and now
+  persist instead, which is a flip from the previous behavior, not new.
+- `backup.py` fully removed. Turned out an earlier session (see below)
+  had already reported this done, but the file was still present with
+  nothing left referencing it — deleted it for real this time.
+
+## Selfie generation reliability + create/show consistency
+
+Root cause of the ~90%-failure-rate bug: `is_self_portrait_request()` was
+only ever checked *after* `is_image_request()` already returned True, and
+`IMAGE_KEYWORDS` had no "selfie" entry and no bare "send"/"show" as an
+action word. Plain requests like "send a selfie" failed the outer check
+and fell straight into ordinary chat. Rebuilt `is_self_portrait_request`
+as an independent action-word x subject-word matcher (checked before, not
+inside, the generic image check), which also fixes create/show behaving
+inconsistently — they're pure synonyms now, same as
+make/generate/draw/send/take/give.
+
+## Nickname change (new)
+
+Any user can ask Elfy to change her own server nickname in chat (e.g.
+"change your name to Sparkling Angel"). Detection lives in `ai_service.py`
+as a pure text function returning the requested name; the actual
+`guild.me.edit(nick=...)` call happens in `message_handler.py`
+(`ai_service.py` still doesn't import `discord`), wrapped in a
+Forbidden/HTTPException handler for the missing-permission case.
+
+## Tests
+
+`tests/` didn't make it into the zip this session — only a misplaced
+`tests/google/genai/__init__.py`, sitting at the project root as a bare
+`__init__.py` — despite the entry below describing a full suite. Moved
+that file back to where it belongs and wrote fresh coverage for
+everything above in `test_storage.py` / `test_core_memory.py` /
+`test_ai_service.py`, all passing (`python -m unittest discover -s tests`).
+Didn't have the old `test_message_handler.py` / web-dashboard coverage to
+restore, since those files weren't recoverable from what was uploaded —
+see `tests/README.md` for what's covered now versus what still needs the
+real Discord/Gemini environment to verify.
+
+---
+
 # Core memory rework, integrated into your updated codebase + backup.py removed
 
 You sent a newer snapshot than what I built the core-memory system

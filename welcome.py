@@ -1,10 +1,13 @@
 """
 Handles the on_member_join event: greets new members with a short,
-unique, Gemini-generated welcome message.
+unique, Gemini-generated welcome message, optionally followed by a
+per-server custom line set via /setwelcome (see commands.do_setwelcome).
 """
 import traceback
 
 import discord
+
+from storage import ChatDataManager
 
 
 async def handle_member_join(member: discord.Member, ai_service) -> None:
@@ -36,6 +39,15 @@ async def handle_member_join(member: discord.Member, ai_service) -> None:
     # Real discord.py mention object, not a manually built "@name" string —
     # and plain text only, since chat-style content never uses embeds.
     text = f"{member.mention} {greeting}"
+
+    # /setwelcome's custom per-server addition, appended to the end of the
+    # base greeting above — this is the ONE place the welcome message gets
+    # assembled, so this is the one place that addition needs to hook in
+    # (see commands.do_setwelcome, which just persists the text; this is
+    # where it actually gets used).
+    welcome_suffix = ChatDataManager.load_welcome_suffix(member.guild.id)
+    if welcome_suffix:
+        text = f"{text}\n{welcome_suffix}"
 
     try:
         await channel.send(text)

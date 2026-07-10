@@ -18,7 +18,7 @@ available (e.g. running outside Replit, for local development), so
 nothing breaks in a non-Replit environment.
 """
 import shelve
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from replit import db as _replit_db  # type: ignore
@@ -29,18 +29,55 @@ except Exception:
 
 _SHELVE_NAME = "chatdata"
 
-# NOTE ON THIS PREFIX: conversation history used to be keyed by Discord
-# *channel* ID (under the old "history:" prefix). It's now keyed by
-# Discord *user* ID instead — each person's conversation with Elfy stays
-# with them across every channel/DM they use, rather than being shared
-# by everyone chatting in the same channel (see core_memory.py and
-# ai_service.py for why). This uses a distinct prefix, deliberately NOT
-# reusing "history:", so old channel-keyed entries are simply never read
-# again instead of being misinterpreted as some user's history. They're
-# harmless leftover data — clear them from Replit DB / the dashboard
-# whenever convenient, or just ignore them.
-_HISTORY_PREFIX = "userhistory:"
-_CORE_MEMORY_PREFIX = "coremem:"
+# NOTE ON THESE PREFIXES: conversation history went channel-keyed ("history:")
+# -> user-keyed ("userhistory:") -> and now, as of the cross-server memory
+# leak fix, (guild, channel)-keyed ("channelhistory:"). Being user-keyed-only
+# meant the SAME Discord user chatting in two different servers shared one
+# history — specifics from Server A (including secrets/named individuals)
+# could surface in Server B. Core memory (durable facts) had the identical
+# problem under the old "coremem:" prefix and is now (guild, user)-keyed
+# under "guildcoremem:" for the same reason.
+#
+# Each rename uses a fresh prefix rather than reformatting keys in place —
+# same trick the user-keyed migration used before this one — so old entries
+# are simply never read again instead of being misinterpreted under the new
+# key shape. They're harmless leftover data; clear them from Replit DB / the
+# dashboard whenever convenient, or just ignore them. /forgetme additionally
+# scrubs the legacy per-user history key for the specific user running it —
+# see delete_legacy_user_history() below.
+_LEGACY_USER_HISTORY_PREFIX = "userhistory:"  # pre-channel-lock; read-path removed, kept only for /forgetme cleanup
+_LEGACY_CORE_MEMORY_PREFIX = "coremem:"  # pre-guild-scoping; unused, listed here only for documentation
+_CHANNEL_HISTORY_PREFIX = "channelhistory:"
+_CORE_MEMORY_PREFIX = "guildcoremem:"
+_WELCOME_SUFFIX_PREFIX = "welcomesuffix:"
+
+
+def _encode_scope(guild_id: Optional[int], other_id: int) -> str:
+    """Encode a (guild_id, other_id) pair — (guild, channel) for chat
+    history, (guild, user) for core memory — into a storage-key suffix.
+    guild_id is None for DMs, which get their own 'dm' bucket, distinct
+    from every real guild ID. This doesn't change DM behavior at all: a DM
+    channel/conversation is already 1:1, so it was always effectively
+    isolated per person regardless of scoping scheme."""
+    guild_part = "dm" if guild_id is None else str(guild_id)
+    return f"{guild_part}:{other_id}"
+
+
+def _decode_scope(suffix: str) -> Optional[Tuple[Optional[int], int]]:
+    """Reverse of _encode_scope(). Returns None if suffix doesn't match the
+    expected 'guild_or_dm:other_id' shape — defensive against unrelated or
+    corrupted keys turning up under the same prefix."""
+    parts = suffix.split(":", 1)
+    if len(parts) != 2:
+        return None
+    guild_part, other_part = parts
+    if not other_part.isnumeric():
+        return None
+    if guild_part == "dm":
+        return (None, int(other_part))
+    if guild_part.isnumeric():
+        return (int(guild_part), int(other_part))
+    return None
 
 
 class _KeyValueStore:
@@ -101,13 +138,17 @@ class ChatDataManager:
     """Manages persistent storage of chat history, tracked threads, chat channels, and VIP greeted-status."""
 
     @staticmethod
-    def load_chat_history() -> Dict[int, List]:
-        """Load chat history (all users) from persistent storage."""
-        history = {}
-        for key in _KeyValueStore.keys_with_prefix(_HISTORY_PREFIX):
-            user_id_str = key[len(_HISTORY_PREFIX):]
-            if user_id_str.isnumeric():
-                history[int(user_id_str)] = _KeyValueStore.get(key, [])
+    def load_chat_history() -> Dict[Tuple[Optional[int], int], List]:
+        """Load chat history (every channel) from persistent storage, keyed
+        by (guild_id, channel_id) — guild_id is None for DMs. Channel-scoped,
+        not user-scoped: Elfy's short-term conversational memory follows the
+        channel now, so nothing from one server's channel can be read while
+        replying in a different server (see the prefix note above)."""
+        history: Dict[Tuple[Optional[int], int], List] = {}
+        for key in _KeyValueStore.keys_with_prefix(_CHANNEL_HISTORY_PREFIX):
+            scope = _decode_scope(key[len(_CHANNEL_HISTORY_PREFIX):])
+            if scope is not None:
+                history[scope] = _KeyValueStore.get(key, [])
         return history
 
     @staticmethod
@@ -116,9 +157,9 @@ class ChatDataManager:
         return _KeyValueStore.get("tracked_threads", [])
 
     @staticmethod
-    def save_chat_history(user_id: int, history: List) -> None:
-        """Save chat history for a specific user."""
-        _KeyValueStore.set(f"{_HISTORY_PREFIX}{user_id}", history)
+    def save_chat_history(scope: Tuple[Optional[int], int], history: List) -> None:
+        """Save chat history for a specific (guild_id, channel_id) scope."""
+        _KeyValueStore.set(f"{_CHANNEL_HISTORY_PREFIX}{_encode_scope(*scope)}", history)
 
     @staticmethod
     def save_tracked_threads(threads: List[int]) -> None:
@@ -126,9 +167,30 @@ class ChatDataManager:
         _KeyValueStore.set("tracked_threads", threads)
 
     @staticmethod
-    def delete_chat_history(user_id: int) -> None:
-        """Delete chat history for a specific user."""
-        _KeyValueStore.delete(f"{_HISTORY_PREFIX}{user_id}")
+    def delete_chat_history(scope: Tuple[Optional[int], int]) -> None:
+        """Delete chat history for a specific (guild_id, channel_id) scope."""
+        _KeyValueStore.delete(f"{_CHANNEL_HISTORY_PREFIX}{_encode_scope(*scope)}")
+
+    @staticmethod
+    def delete_legacy_user_history(user_id: int) -> None:
+        """Best-effort cleanup of the pre-channel-lock per-user history
+        entry, if one still exists for this user. Nothing in current code
+        reads this key (see the prefix migration note above), but
+        /forgetme scrubs it anyway so a genuine 'forget everything about
+        me' request actually leaves nothing behind."""
+        _KeyValueStore.delete(f"{_LEGACY_USER_HISTORY_PREFIX}{user_id}")
+
+    # ── Per-server welcome message customization (see welcome.py) ───────
+    @staticmethod
+    def load_welcome_suffix(guild_id: int) -> Optional[str]:
+        """Load this server's custom text appended to the end of Elfy's
+        welcome message (set via /setwelcome), or None if never set."""
+        return _KeyValueStore.get(f"{_WELCOME_SUFFIX_PREFIX}{guild_id}", None)
+
+    @staticmethod
+    def save_welcome_suffix(guild_id: int, text: str) -> None:
+        """Save this server's custom welcome-message suffix."""
+        _KeyValueStore.set(f"{_WELCOME_SUFFIX_PREFIX}{guild_id}", text)
 
     @staticmethod
     def load_chat_channels() -> Dict[int, int]:
@@ -183,29 +245,32 @@ class ChatDataManager:
         """Save the full VIP user dict to persistent storage."""
         _KeyValueStore.set("vip_config", vip_config)
 
-    # ── Per-user core memories (see core_memory.py) ─────────────────────
+    # ── Per-(guild, user) core memories (see core_memory.py) ─────────────
     @staticmethod
-    def load_all_core_memories() -> Dict[int, Dict[str, Any]]:
-        """Load every user's core-memory record from persistent storage,
-        keyed by Discord user ID. Used once at startup; see
-        core_memory.py for the in-memory cache built from this."""
-        result: Dict[int, Dict[str, Any]] = {}
+    def load_all_core_memories() -> Dict[Tuple[Optional[int], int], Dict[str, Any]]:
+        """Load every core-memory record from persistent storage, keyed by
+        (guild_id, user_id) — guild_id is None for DMs. Guild-scoped, not
+        just user-scoped: a fact distilled about someone in one server must
+        never surface while Elfy is replying to them in a different server.
+        Used once at startup; see core_memory.py for the in-memory cache
+        built from this."""
+        result: Dict[Tuple[Optional[int], int], Dict[str, Any]] = {}
         for key in _KeyValueStore.keys_with_prefix(_CORE_MEMORY_PREFIX):
-            user_id_str = key[len(_CORE_MEMORY_PREFIX):]
-            if user_id_str.isnumeric():
-                result[int(user_id_str)] = _KeyValueStore.get(key, {})
+            scope = _decode_scope(key[len(_CORE_MEMORY_PREFIX):])
+            if scope is not None:
+                result[scope] = _KeyValueStore.get(key, {})
         return result
 
     @staticmethod
-    def save_core_memories(user_id: int, data: Dict[str, Any]) -> None:
-        """Save one user's core-memory record (their distilled facts +
-        bookkeeping) to persistent storage."""
-        _KeyValueStore.set(f"{_CORE_MEMORY_PREFIX}{user_id}", data)
+    def save_core_memories(scope: Tuple[Optional[int], int], data: Dict[str, Any]) -> None:
+        """Save one (guild_id, user_id) scope's core-memory record (its
+        distilled facts + bookkeeping) to persistent storage."""
+        _KeyValueStore.set(f"{_CORE_MEMORY_PREFIX}{_encode_scope(*scope)}", data)
 
     @staticmethod
-    def delete_core_memories(user_id: int) -> None:
-        """Delete a specific user's core-memory record entirely."""
-        _KeyValueStore.delete(f"{_CORE_MEMORY_PREFIX}{user_id}")
+    def delete_core_memories(scope: Tuple[Optional[int], int]) -> None:
+        """Delete a specific (guild_id, user_id) scope's core-memory record entirely."""
+        _KeyValueStore.delete(f"{_CORE_MEMORY_PREFIX}{_encode_scope(*scope)}")
 
     # ── Elfy reference portrait (see ai_service.generate_character_image) ─
     @staticmethod

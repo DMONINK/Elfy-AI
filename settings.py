@@ -38,10 +38,10 @@ IMAGE_GENERATION_CONFIG = {
 
 # Safety settings for content filtering
 SAFETY_SETTINGS = [
-    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
 # Bot personality/system prompt template
@@ -104,8 +104,8 @@ ELFY_APPEARANCE_DESCRIPTION = (
     "approachable style — think comfy hoodies, denim jackets, sneakers — "
     "with a small silver stud earring. Semi-realistic illustrated/anime art "
     "style, soft warm lighting. Keep her face, hairstyle, and hair color "
-    "identical across every image; only the outfit, pose, and setting should "
-    "change to match what's asked for."
+    "identical across every image; only the outfit, pose, and setting should change. "
+    "on every other image. "
 )
 
 # System instruction used to generate a fresh on_member_join greeting every
@@ -128,7 +128,7 @@ MAX_MESSAGE_LENGTH = 1900
 
 # Maximum number of lines an AI chat reply is allowed to have before it
 # gets shortened (re-prompted) or, as a last resort, hard-truncated.
-MAX_REPLY_LINES = 4
+MAX_REPLY_LINES = 5
 
 # ── Per-user "core memory" system ────────────────────────────────────────
 # See core_memory.py + ai_service.py's _build_session_history /
@@ -141,15 +141,15 @@ MAX_REPLY_LINES = 4
 # a person's rolling "recent conversation" window. This — not total
 # conversation length — is what actually gets re-sent to Gemini on every
 # reply, so it's the main lever on per-reply latency/cost.
-CORE_MEMORY_WINDOW_SIZE = 12
+CORE_MEMORY_WINDOW_SIZE = 100
 
 # Run the "what's actually worth remembering about this person?"
 # distillation once every this-many text-chat messages from them.
-CORE_MEMORY_EXTRACTION_INTERVAL = 15
+CORE_MEMORY_EXTRACTION_INTERVAL = 20
 
 # Max distilled facts kept per user before Elfy compresses/merges them
 # (via Gemini) back down under this cap.
-CORE_MEMORY_FACT_CAP = 25
+CORE_MEMORY_FACT_CAP = 100
 
 # Discord bot configuration
 BOT_PREFIX = []

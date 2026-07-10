@@ -82,6 +82,7 @@ class GeminiBot:
         async def on_message(message: discord.Message):
             await handle_message(
                 message,
+                self.bot,
                 self.ai_service,
                 self.storage_manager,
                 self.chat_channel_manager,
