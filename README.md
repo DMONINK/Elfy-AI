@@ -38,7 +38,7 @@ Two layers. A short **rolling window** per channel — what's actually being sai
 
 ## 🏗️ Under the hood
 
-Discord bot + web dashboard, one process, one event loop. Gemini for chat, memory, and image editing. Pollinations for general image generation. Replit DB (or local `shelve` when running elsewhere) for storage.
+Discord bot + web dashboard, one process, one event loop. Gemini for chat, memory, and image editing. Pollinations for general image generation. Local `shelve` for storage.
 
 ## 🚀 Running it
 
