@@ -39,7 +39,6 @@ task = "shell.exec"
 args = "rm -f chat_history.db chat_history.dir chat_history.bak chat_history.dat chat_history chatdata"
 
 [deployment]
-deploymentTarget = "vm"
 run = ["python", "main.py"]
 
 [[ports]]
