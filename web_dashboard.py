@@ -1,31 +1,3 @@
-"""
-Web dashboard for Elfy.
-
-Runs as an aiohttp app in the *same* asyncio event loop as the Discord
-bot (see main.py) — not a separate thread/process — so it can read live
-bot state (bot.guilds, active AI sessions) directly and safely `await`
-bot calls (e.g. updating presence) with no cross-thread synchronization.
-
-Routes:
-  GET  /                        overview stats
-  GET  /servers                 every server Elfy's in: name, icon, members, chat channel
-  GET  /users                   who's talking to her — DMs and servers, shown separately
-  GET  /conversation/{id}       full logged transcript for one channel
-  GET  /vips, /vips/new,
-       /vips/edit/{user_id}     VIP roster + add/edit forms
-  POST /vips/save               create or update a VIP
-  POST /vips/delete             remove a VIP
-  POST /vips/reset-greeting     re-arm a VIP's one-time greeting
-  GET  /settings                every dashboard-editable bot setting
-  POST /settings                save settings (applies immediately, no restart)
-  POST /settings/reset          revert every setting to its built-in default
-  GET/POST /login, POST /logout password gate
-
-Auth: a single shared password (the DASHBOARD_PASSWORD env var/Secret).
-This dashboard can show private DMs and change how the bot behaves, so
-if no password is configured it fails CLOSED — every route shows setup
-instructions instead of serving anything, rather than defaulting to open.
-"""
 import html
 import os
 import secrets
@@ -46,14 +18,8 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 _SESSION_COOKIE = "elfy_dashboard_session"
 _SESSION_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
 
-# In-memory session store (token -> expiry). Resets on restart, same as
-# everything else process-local here — fine for a single-operator tool.
 _sessions: dict = {}
 
-
-# ---------------------------------------------------------------------------
-# Auth
-# ---------------------------------------------------------------------------
 
 def _new_session() -> str:
     token = secrets.token_urlsafe(32)
@@ -95,10 +61,6 @@ async def _auth_middleware(request: web.Request, handler):
 
     return await handler(request)
 
-
-# ---------------------------------------------------------------------------
-# HTML shell
-# ---------------------------------------------------------------------------
 
 _CSS = """
 :root {
@@ -334,10 +296,6 @@ def _format_time(iso_ts: Optional[str]) -> str:
     return dt.strftime("%b %d, %Y, %I:%M %p UTC")
 
 
-# ---------------------------------------------------------------------------
-# Auth routes
-# ---------------------------------------------------------------------------
-
 def _login_body(error: bool = False) -> str:
     error_html = (
         '<div class="flash flash-error">Wrong password — try again.</div>' if error else ""
@@ -381,10 +339,6 @@ async def handle_logout(request: web.Request) -> web.Response:
     return resp
 
 
-# ---------------------------------------------------------------------------
-# Overview
-# ---------------------------------------------------------------------------
-
 async def handle_home(request: web.Request) -> web.Response:
     bot = request.app["bot"]
     dm_convos = conversation_log.list_dm_conversations()
@@ -410,10 +364,6 @@ async def handle_home(request: web.Request) -> web.Response:
     )
     return _page("Overview", body, active="overview")
 
-
-# ---------------------------------------------------------------------------
-# Servers
-# ---------------------------------------------------------------------------
 
 async def handle_servers(request: web.Request) -> web.Response:
     bot = request.app["bot"]
@@ -463,10 +413,6 @@ async def handle_servers(request: web.Request) -> web.Response:
     )
     return _page("Servers", body, active="servers")
 
-
-# ---------------------------------------------------------------------------
-# Users (DMs + server conversations)
-# ---------------------------------------------------------------------------
 
 def _conversation_row(conv: dict, is_dm: bool) -> str:
     names = conv.get("participant_names", {})
@@ -589,19 +535,7 @@ async def handle_conversation(request: web.Request) -> web.Response:
     return _page("Conversation", body, active="users")
 
 
-# ---------------------------------------------------------------------------
-# VIPs
-# ---------------------------------------------------------------------------
-
 def _flash_from_query(request: web.Request) -> str:
-    """
-    Build a flash banner from the ?ok=...  / ?err=... query param a VIP
-    write route (save/delete/reset-greeting below) redirected with. Those
-    routes redirect (Post/Redirect/Get, so refreshing the page doesn't
-    resubmit the form) rather than rendering directly like Settings does,
-    so this is how they carry a real success/error message across that
-    redirect instead of the list just silently reloading either way.
-    """
     ok = request.query.get("ok")
     err = request.query.get("err")
     if ok:
@@ -724,15 +658,6 @@ async def handle_vip_edit(request: web.Request) -> web.Response:
 
 
 async def handle_vip_save(request: web.Request) -> web.Response:
-    """
-    Create or update a VIP.
-
-    NOTE: this used to redirect back to /vips unconditionally with no
-    success/error message at all — the save itself worked, but with zero
-    visible confirmation either way, a real save and a silent failure
-    looked identical, which is exactly what made this feel like "adding a
-    VIP does nothing." It now reports what actually happened.
-    """
     data = await request.post()
     raw_id = str(data.get("user_id", "")).strip()
     name = str(data.get("name", "")).strip()
@@ -779,7 +704,6 @@ async def handle_vip_delete(request: web.Request) -> web.Response:
 
 
 async def handle_vip_sync_from_code(request: web.Request) -> web.Response:
-    """Overwrite live Replit DB VIP config with _DEFAULT_VIP_USERS from vip_users.py."""
     ns: dict = {}
     stub_cm = type("CM", (), {
         "load_vip_config": staticmethod(lambda: None),
@@ -822,10 +746,6 @@ async def handle_vip_reset_greeting(request: web.Request) -> web.Response:
 
     raise web.HTTPFound("/vips?" + urlencode({"ok": f"{name}'s one-time greeting is re-armed."}))
 
-
-# ---------------------------------------------------------------------------
-# Settings
-# ---------------------------------------------------------------------------
 
 _SAFETY_LABELS = {
     "BLOCK_NONE": "Don't block anything",
@@ -928,20 +848,6 @@ async def handle_settings_get(request: web.Request) -> web.Response:
 
 
 async def _apply_live_settings(request: web.Request) -> str:
-    """
-    Push freshly-saved settings out to the running bot: rebuild active AI
-    sessions with the new generation/safety config, and update Discord
-    presence if the activity text changed.
-
-    The setting itself is already saved to storage by the time this runs
-    (see handle_settings_post/handle_settings_reset) — only the *live push*
-    can fail here. Previously ai_service.refresh_active_sessions() wasn't
-    wrapped at all, so if it ever raised, the whole request crashed with a
-    raw 500 instead of the settings page — even though the save had already
-    succeeded. Returns a short description of anything that didn't apply
-    live, or "" if everything applied cleanly, so the caller can show an
-    accurate message either way instead of a blanket "success."
-    """
     problems = []
 
     ai_service = request.app["ai_service"]
@@ -980,10 +886,6 @@ async def handle_settings_post(request: web.Request) -> web.Response:
         )
         return _page("Settings", _settings_body(flash=flash), active="settings")
 
-    # If the appearance description itself changed, the cached reference
-    # portrait (see ai_service.generate_character_image) no longer matches
-    # it — drop it so the next "picture of Elfy" request bootstraps a fresh
-    # one from the new description instead of reusing the old look.
     if "elfy_appearance" in changes and changes["elfy_appearance"] != dashboard_settings.get("elfy_appearance"):
         ChatDataManager.delete_elfy_reference_image()
 
@@ -1014,10 +916,6 @@ async def handle_settings_reset(request: web.Request) -> web.Response:
         flash = '<div class="flash flash-success">Every setting reset to its default.</div>'
     return _page("Settings", _settings_body(flash=flash), active="settings")
 
-
-# ---------------------------------------------------------------------------
-# App factory
-# ---------------------------------------------------------------------------
 
 def create_dashboard_app(bot, ai_service, chat_channel_manager, threads_manager) -> web.Application:
     app = web.Application(middlewares=[_auth_middleware])
