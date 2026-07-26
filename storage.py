@@ -2,32 +2,21 @@
 Persistence layer for storing and retrieving conversation history, tracked
 threads, chat-channel settings, and VIP greeted-status.
 
-REPLIT GOTCHA THIS FILE WORKS AROUND: local files (the old shelve-based
-'chatdata' db) do NOT survive a Replit republish. Each new deployment gets
-a fresh filesystem built from the repo, so anything written to disk at
-runtime — including a local shelve/dbm file — disappears on the next
-publish, even on a Reserved VM. Replit's own guidance for exactly this
-situation is to use Replit DB (a small persistent key-value store that
-lives outside the deployment's filesystem and survives redeploys) instead
-of local files for this kind of app state.
+Storage backend: bot_data.json (a JSON file in the project workspace).
+The entire store is loaded into memory at startup and flushed to disk on
+every write. This file is committed to the repo, so its contents at the
+time of the last commit are the baseline on a fresh deploy.
 
-This module prefers Replit DB (via the `replit` package, which reads the
-REPLIT_DB_URL Replit provides automatically — no setup needed) and
-transparently falls back to a local shelve file if Replit DB isn't
-available (e.g. running outside Replit, for local development), so
-nothing breaks in a non-Replit environment.
+NOTE: On Replit Autoscale deployments the filesystem is rebuilt from the
+repo on every redeploy, so runtime writes will not survive a republish
+unless you commit the updated bot_data.json to the repo before deploying.
+On Reserved VM or when self-hosting, the file persists across restarts
+and redeploys normally.
 """
-import shelve
+import json
+import os
+import threading
 from typing import Any, Dict, List, Optional, Tuple
-
-try:
-    from replit import db as _replit_db  # type: ignore
-    _HAS_REPLIT_DB = True
-except Exception:
-    _replit_db = None
-    _HAS_REPLIT_DB = False
-
-_SHELVE_NAME = "chatdata"
 
 # NOTE ON THESE PREFIXES: conversation history went channel-keyed ("history:")
 # -> user-keyed ("userhistory:") -> and now, as of the cross-server memory
@@ -80,58 +69,65 @@ def _decode_scope(suffix: str) -> Optional[Tuple[Optional[int], int]]:
     return None
 
 
+_JSON_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_data.json")
+_json_db_lock = threading.Lock()
+
+# Load the JSON store into memory once at import time.
+def _load_json_db() -> Dict[str, Any]:
+    if os.path.exists(_JSON_DB_PATH):
+        try:
+            with open(_JSON_DB_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[storage] Failed to load {_JSON_DB_PATH}: {e}. Starting with empty store.")
+    return {}
+
+_json_db: Dict[str, Any] = _load_json_db()
+
+
+def _flush_json_db() -> None:
+    """Write the in-memory store to disk. Must be called with _json_db_lock held."""
+    tmp_path = _JSON_DB_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(_json_db, f, indent=2, default=str)
+    os.replace(tmp_path, _JSON_DB_PATH)
+
+
 class _KeyValueStore:
     """
-    Minimal persistent key-value store used by ChatDataManager below.
-    Prefers Replit DB (survives redeploys); falls back to a local shelve
-    file (survives restarts only — the old behavior) if Replit DB raises
-    for any reason, e.g. REPLIT_DB_URL isn't set because we're not
-    actually running on Replit.
+    Minimal persistent key-value store backed by bot_data.json.
+    The full store is loaded into memory at startup and written to disk
+    atomically on every set/delete. Thread-safe via a module-level lock.
     """
 
     @staticmethod
     def get(key: str, default=None):
-        if _HAS_REPLIT_DB:
-            try:
-                return _replit_db.get(key, default)
-            except Exception as e:
-                print(f"[storage] Replit DB get({key!r}) failed, falling back to shelve: {e}")
-        with shelve.open(_SHELVE_NAME) as db:
-            return db.get(key, default)
+        with _json_db_lock:
+            return _json_db.get(key, default)
 
     @staticmethod
     def set(key: str, value) -> None:
-        if _HAS_REPLIT_DB:
+        with _json_db_lock:
+            _json_db[key] = value
             try:
-                _replit_db[key] = value
-                return
+                _flush_json_db()
             except Exception as e:
-                print(f"[storage] Replit DB set({key!r}) failed, falling back to shelve: {e}")
-        with shelve.open(_SHELVE_NAME) as db:
-            db[key] = value
+                print(f"[storage] Failed to flush bot_data.json on set({key!r}): {e}")
 
     @staticmethod
     def delete(key: str) -> None:
-        if _HAS_REPLIT_DB:
-            try:
-                if key in _replit_db:
-                    del _replit_db[key]
-                return
-            except Exception as e:
-                print(f"[storage] Replit DB delete({key!r}) failed, falling back to shelve: {e}")
-        with shelve.open(_SHELVE_NAME) as db:
-            if key in db:
-                del db[key]
+        with _json_db_lock:
+            if key in _json_db:
+                del _json_db[key]
+                try:
+                    _flush_json_db()
+                except Exception as e:
+                    print(f"[storage] Failed to flush bot_data.json on delete({key!r}): {e}")
 
     @staticmethod
     def keys_with_prefix(prefix: str) -> List[str]:
-        if _HAS_REPLIT_DB:
-            try:
-                return [k for k in _replit_db.keys() if k.startswith(prefix)]
-            except Exception as e:
-                print(f"[storage] Replit DB keys() failed, falling back to shelve: {e}")
-        with shelve.open(_SHELVE_NAME) as db:
-            return [k for k in db.keys() if k.startswith(prefix)]
+        with _json_db_lock:
+            return [k for k in _json_db if k.startswith(prefix)]
 
 
 class ChatDataManager:

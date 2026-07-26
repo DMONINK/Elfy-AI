@@ -65,7 +65,7 @@ IMAGE_EDIT_KEYWORDS = [
 # make it into this checkout) — fixed back to "flux" here.
 POLLINATIONS_IMAGE_URL = (
     "https://gen.pollinations.ai/image/{prompt}"
-    "?model=flux&width=1024&height=1024&nologo=true&enhance=true"
+    "?model=kontext&width=1024&height=1024&nologo=true&enhance=true"
 )
 
 CHAT_MODEL = "gemini-3.1-flash-lite"

@@ -32,7 +32,7 @@ IMAGE_GENERATION_CONFIG = {
     "temperature": 0.9,
     "top_p": 0.5,
     "top_k": 40,
-    "max_output_tokens": 300,  # Image descriptions can be longer
+    "max_output_tokens": 500,  # Image descriptions can be longer
     "candidate_count": 1,  # "max_output_tokens": 512,
 }
 
@@ -115,7 +115,7 @@ ELFY_APPEARANCE_DESCRIPTION = (
 WELCOME_MESSAGE_INSTRUCTION = (
     "You are Elfy, a witty and warm Discord community greeter. A new member "
     "just joined the server. Write ONE short, friendly welcome message for "
-    "them — 2 to 3 sentences maximum. Be playful and genuine, and make this "
+    "them — 1 to 2 sentences maximum. Be playful and genuine, and make this "
     "greeting feel fresh: vary your opening line, structure, jokes, and any "
     "emoji every single time so it never reads like a copy-pasted template. "
     "Do not include the member's name or any @mention in your reply — that "
